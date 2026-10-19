@@ -15,4 +15,4 @@ If you have any tips or want to contact me to idk help me coding, planing or eve
 
 ## About me
 
-I am a solo (noob) dev that is trying to improve his skills while being jobless (basically waiting for next year to apply for universities and maybe do work & travel). Yea I guess that's all you need to know for now. If you try to contact me look at my profile, add me on discord **___entro___** or shoot me an email at **alexhuber1811@posteo.com**
+I am a solo (noob) dev that is trying to improve his skills while being jobless (basically waiting for next year to apply for universities and maybe do work & travel). Yea I guess that's all you need to know for now. If you try to contact me look at my profile, add me on discord **\_entro\_** or shoot me an email at **alexhuber1811@posteo.com**
