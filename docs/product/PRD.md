@@ -1,249 +1,89 @@
-# PostFlowX – Product Requirements Document
+# Product Requirements Document
 
-**Version:** 0.2  
-**Status:** MVP scope defined; technical decisions pending  
-**Product type:** Self-hosted social media publishing platform
+**Status:** Proposed baseline  
+**Product:** PostFlowX
 
-## 1. Product Vision
+## 1. Product summary
 
-PostFlowX is a self-hosted social media publishing platform that enables users to create, manage, schedule, and publish social media content through a web interface.
+PostFlowX is a self-hosted social publishing platform for managing social accounts, preparing content, and publishing immediately or on a schedule. Each customer operates an installation using a central Docker Compose deployment. A web application is the primary user interface; it includes a thin Backend-for-Frontend (BFF) for browser HTTP/session concerns and forwards protected operations through the IPC Gateway to Core. Platform functionality is extended through plugins with explicit permissions and controlled access to Core services.
 
-The platform combines server-side publishing, persistent scheduling, and AI-assisted text generation in a single Docker-based installation.
+## 2. Problem and goals
 
-## 2. Target Users and Goals
+The product should make social publishing easier to operate while keeping customer data and credentials under the customer's deployment control.
 
-PostFlowX is intended for individuals and organizations that want to manage social media publishing through their own hosted infrastructure.
+### Goals
 
-The MVP aims to:
+1. Provide a reliable web UI for account management, content preparation, and publishing.
+2. Support multiple application users within one installation with enforced ownership and role permissions.
+3. Publish to Instagram first, including immediate and scheduled publishing.
+4. Keep access tokens and other credentials encrypted at rest.
+5. Provide a documented plugin interface for adding integrations and features without giving plugins unrestricted database access.
+6. Deploy and upgrade the complete stack predictably using Docker Compose.
+7. Recover cleanly from process restarts and interrupted jobs.
+8. Add AI-assisted text generation in a later milestone, with providers behind a replaceable interface.
 
-- Provide a central web interface for managing posts and social accounts.
-- Support immediate and scheduled publishing.
-- Automate publishing tasks through persistent background jobs.
-- Assist users with AI-generated and edited text.
-- Simplify installation, configuration, and maintenance through Docker Compose.
+## 3. Non-goals for the first usable release
 
-## 3. MVP Scope
+- Hosted multi-tenant SaaS operated by the PostFlowX project.
+- TikTok publishing in the first release.
+- AI image/video generation or model hosting.
+- Arbitrary plugin code running inside the Core process.
+- Giving plugins direct database credentials or unrestricted SQL access.
+- A plugin marketplace with automatic trust guarantees.
+- Kubernetes, multi-host clustering, or high availability.
+- A promise that third-party social APIs will always be available or permit every requested operation.
+- A custom general-purpose process supervisor where Docker's lifecycle features suffice.
 
-### 3.1 User Access
+## 4. Deployment and operating model
 
-- Secure authentication for the web interface.
-- Server-side authorization for protected operations.
-- Secure handling of credentials and sessions.
+- One Compose project per customer installation.
+- Separate containers for Web (frontend + thin BFF), Core, IPC Gateway, Watchdog, PostgreSQL, and each enabled plugin runtime where practical.
+- Only the Web entry point is exposed to the host by default. PostgreSQL and internal services remain on private networks.
+- Persistent volumes are used for database state, media files, and required operational state.
+- Configuration and encryption keys are supplied as deployment secrets or protected files, never committed to source control.
+- The deployment repository pins compatible image versions. Production deployments must not rely on floating `latest` tags.
 
-The initial deployment is dedicated to one customer or operator. Global SaaS multi-tenancy is out of scope.
+## 5. Roles
 
-### 3.2 Social Account Management
+### Installation administrator
 
-- Connect and manage supported social media accounts.
-- Display connection status and relevant errors.
-- Store access tokens and credentials securely.
+Can manage installation settings, users, role assignments, plugin installation/enablement, and operational status through supported product interfaces. Does not automatically receive raw database superuser access.
 
-**Instagram is the first supported publishing platform.** TikTok integration is planned for a later release.
+### Registered user
 
-Supported account types, permissions, and media formats must be verified against the applicable platform APIs before implementation.
+Can manage their own social accounts, content, jobs, and authorized plugin instances. They cannot access another user's records or secrets unless an explicit permission grants that access.
 
-### 3.3 Post and Media Management
+### Plugin
 
-Users must be able to:
+Receives a scoped identity and a declared set of capabilities. It can only act on behalf of an authorized user and only through documented Core APIs. A plugin's requested permissions are not granted automatically.
 
-- Create, edit, and delete posts.
-- Save and manage drafts.
-- Add captions, hashtags, and supported media.
-- Select a target social account.
-- Preview post content before publishing.
-- Validate supported formats and platform requirements.
+### Deployment operator
 
-Media must be stored persistently and associated with the appropriate posts.
+Controls the host, Compose configuration, persistent volumes, backups, secrets, and database recovery. This role is outside normal application authorization and must be treated as highly privileged.
 
-### 3.4 Publishing and Scheduling
+## 6. MVP functional scope
 
-PostFlowX supports two publishing modes:
+- Login/logout and secure session handling.
+- Administrator-created users and role-based authorization.
+- Core service and health reporting.
+- Plugin registry and lifecycle status.
+- One reference plugin to validate the plugin contract.
+- Instagram account connection and token lifecycle where supported by Meta's current API and app permissions.
+- Content/media metadata, publishing jobs, immediate publishing, scheduled publishing, status, retries and audit trail.
+- Durable jobs that survive process restart.
+- Encrypted credential storage with key material outside the database.
+- Basic administration and operational diagnostics.
+- Backup/restore and documented upgrade path before a production release.
 
-**Manual publishing**
-- Users initiate immediate publishing.
-- Users control post creation and scheduling.
-- Posts remain under user control.
+## 7. Later scope
 
-**Automated publishing**
-- Users schedule posts for future publication.
-- The server processes scheduled jobs independently.
-- Jobs persist across container restarts.
-- Failures are recorded and handled using controlled retry rules.
+- AI text generation through a provider interface.
+- More plugin integrations, including TikTok after API feasibility review.
+- Improved plugin distribution, package signing, update/rollback tooling, and developer SDK.
+- Optional external object storage if local persistent media storage becomes insufficient.
 
-Automated publishing does not imply autonomous content planning or unrestricted publication of AI-generated content.
+## 8. Product success criteria
 
-### 3.5 Publishing Jobs
+The first usable release is successful when a fresh deployment can be started from documented instructions, an administrator can create a user, the user can connect an eligible Instagram account, publish a supported post immediately or on a schedule, inspect the final job state, and restart the stack without losing jobs or exposing another user's data.
 
-The system must maintain persistent publishing jobs with clear states, including scheduled, pending, processing, published, failed, and cancelled where applicable.
-
-Requirements:
-
-- Track publishing status and attempts.
-- Record relevant errors and results.
-- Support controlled retries.
-- Prevent duplicate publications wherever technically possible.
-- Handle time zones and daylight saving time.
-- Recover pending work after service restarts.
-
-Retries must account for uncertain outcomes from external APIs to avoid unintentionally publishing the same content twice.
-
-### 3.6 AI Text Generation
-
-The MVP includes:
-
-- Caption generation.
-- Hashtag suggestions.
-- Text rewriting and shortening.
-- Editing of generated suggestions before use.
-
-AI-generated content is not automatically published unless the user explicitly configures an appropriate workflow.
-
-AI image generation is out of scope. The AI provider must be replaceable through a defined backend interface.
-
-## 4. Web Application
-
-The frontend must provide:
-
-- Authentication.
-- A dashboard with relevant posts and publishing status.
-- Social account management.
-- Post creation and editing.
-- Media uploads and selection.
-- AI-assisted text editing.
-- Draft management.
-- Scheduling and publishing history.
-- Clear error messages and job status information.
-
-The interface should be responsive and communicate with the backend through a documented API.
-
-## 5. Technical Architecture
-
-The initial architecture consists of:
-
-- **Web frontend:** User interface and client-side interactions.
-- **Backend/API:** Authentication, business logic, post management, provider integrations, and job management.
-- **Publishing worker:** Executes scheduled and background publishing tasks.
-- **PostgreSQL:** Persistent application data and job state.
-- **Optional reverse proxy:** External access and HTTPS termination where required.
-
-The backend and publishing worker may use the same container image with different startup commands.
-
-The backend should initially be a modular application rather than an unnecessarily distributed microservice system.
-
-Key abstractions include:
-
-- `PublishingProvider` for platform-specific publishing.
-- `AIProvider` for AI text generation.
-
-Initial data entities include `User`, `SocialAccount`, `MediaAsset`, `Post`, `PublishingJob`, `PublishingAttempt`, and `AuditEvent`.
-
-## 6. Deployment and Operations
-
-The product must be deployable through a central Docker Compose configuration.
-
-Requirements:
-
-- Documented environment configuration.
-- Persistent database and media storage.
-- Health checks and useful logs.
-- Database migrations.
-- Versioned container images.
-- Documented installation and update procedures.
-- Backup and restore procedures.
-- Secure management of secrets.
-
-The `postflowx-deploy` repository contains deployment configuration, operational tooling, and project documentation. It is not a separate application service.
-
-## 7. Security and Reliability
-
-The MVP must include:
-
-- Server-side authorization.
-- Secure credential and token storage.
-- Input validation.
-- Protection of secrets from frontend exposure and log output.
-- Persistent publishing job state.
-- Controlled retry and error handling.
-- Tested backup and restoration procedures.
-
-## 8. Out of Scope
-
-The following features are excluded from the MVP:
-
-- TikTok publishing.
-- AI image generation.
-- Advanced analytics and reporting.
-- Plugin marketplace.
-- Complex team approval workflows.
-- Subscription billing and payment processing.
-- Global SaaS multi-tenancy.
-- Distributed multi-server deployments.
-- Integrated video editing.
-- Fully autonomous content campaigns.
-
-The architecture may support future extensions without requiring these features in the initial release.
-
-## 9. MVP Acceptance Criteria
-
-The MVP is ready for release when:
-
-1. A fresh installation can be deployed using the documented Docker Compose setup.
-2. Application data and media survive container restarts.
-3. Users can authenticate and access protected functionality.
-4. An eligible Instagram account can be connected.
-5. Users can create, edit, and save drafts.
-6. Supported posts can be published immediately or scheduled.
-7. Publishing status, attempts, and errors are traceable.
-8. Scheduled jobs survive service restarts.
-9. Retries are controlled and duplicate publishing is prevented wherever technically possible.
-10. Users can generate and edit AI text suggestions.
-11. Secrets are not exposed to the frontend or written to logs.
-12. Backup restoration and essential application workflows are tested.
-
-## 10. Development Phases
-
-**Phase 1 – Audit and Architecture**
-- Review the existing PostAPI and PostAPI-Storage implementations.
-- Identify reusable publishing, token, and media-handling logic.
-- Define repository boundaries and technology choices.
-- Specify the initial data model and API contract.
-
-**Phase 2 – Foundation**
-- Initialize frontend and backend.
-- Set up PostgreSQL, authentication, migrations, and Docker Compose.
-- Establish configuration and testing conventions.
-
-**Phase 3 – Instagram Publishing**
-- Implement account integration and media handling.
-- Implement post management and publishing jobs.
-- Add scheduling, status tracking, retries, and failure handling.
-
-**Phase 4 – Web UI and AI**
-- Complete the post editor, drafts, scheduling, and dashboard.
-- Integrate AI text generation.
-- Improve error handling and usability.
-
-**Phase 5 – Stabilization and Release**
-- Run integration and security tests.
-- Verify restart recovery and backup restoration.
-- Finalize documentation and publish the first stable MVP release.
-
-## 11. Open Technical Decisions
-
-The following decisions remain open until the existing code and requirements have been reviewed:
-
-- Backend and frontend frameworks.
-- Instagram account types, permissions, and supported formats.
-- AI provider and cost management.
-- Job execution, locking, and retry semantics.
-- Media storage and public HTTPS delivery.
-- Authentication and session strategy.
-- Backup security and recovery.
-- Image versioning and update strategy.
-- Licensing and extension model.
-
-## 12. Next Step
-
-The next step is to audit the existing PostAPI and PostAPI-Storage codebases before finalizing the architecture.
-
-The audit must document reusable components, external dependencies, token handling, publishing workflows, and media delivery. The findings will inform architecture decisions, the database schema, API contracts, and implementation tasks.
+The release is not considered production-ready until security, backup/restore, upgrade, and failure-recovery acceptance tests pass.
