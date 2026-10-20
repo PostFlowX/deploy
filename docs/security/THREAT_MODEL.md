@@ -103,7 +103,7 @@
 ### T11 — Watchdog/Gateway failure hides system state
 
 **Risk:** One monitoring/communication failure is misreported as total system failure.  
-**Mitigations:** Independent health observation paths; separate `UNKNOWN` from `UNRESPONSIVE`; Watchdog must not rely solely on Gateway; monitor Watchdog itself through Docker/operator health.
+**Mitigations:** Independent health observation paths; separate `UNKNOWN` from `UNRESPONSIVE`; Watchdog must not rely solely on the Gateway for all observations. The server health endpoint reports Watchdog-module health, while Docker/operator monitoring observes whole-server process health. The Watchdog cannot monitor the server after the entire process terminates.
 
 ### T12 — Backup or upgrade damages data
 

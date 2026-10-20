@@ -4,8 +4,8 @@ These items are deliberately not hidden inside implementation assumptions. Each 
 
 | ID | Decision | Proposed default | Resolve by |
 |###|###|###|###|
-| OD-01 | Implementation language/framework for Web/Core/Gateway/Watchdog | Reuse the strongest existing PostAPI language where practical; select one primary stack unless a clear need justifies another | M0.1 |
-| OD-02 | Internal transport | Private HTTP/JSON with schema validation over the Compose network for v1; evaluate Unix sockets only if deployment constraints justify them | M0.3 |
+| OD-01 | Initial implementation language/framework | **Proposed baseline:** C++20 server; TypeScript + Fastify Web BFF; TypeScript + React + Vite frontend. See ADR-0003. PostAPI reuse review is deferred to M12. Validate build/dependency tooling before implementation. | M0.1 baseline; implementation validation in M2 |
+| OD-02 | Internal transport | **Preferred:** gRPC + Protocol Buffers over the private Compose network. Validate service authentication, deadlines, payload limits, health reporting, compatibility and generated-code workflow before finalizing. | M0.3 |
 | OD-03 | Authentication/session mechanism | Choose server-side sessions or a short-lived token design. Web BFF handles cookie/session transport and browser protections; Core validates session identity and remains authorization authority. Use HttpOnly, Secure, SameSite cookies where compatible, plus CSRF/origin protections for cookie-authenticated mutations | M0.5 |
 | OD-04 | Plugin data layout | **Resolved:** one schema per installed plugin (or plugin installation), with owner-scoped records for per-user data; Core checks ownership on every operation | Closed in baseline |
 | OD-05 | Plugin runtime provisioning | First release enables controlled/bundled plugin packages; dynamic arbitrary plugin installation waits for Runtime Controller design | M0.4 |
@@ -19,6 +19,9 @@ These items are deliberately not hidden inside implementation assumptions. Each 
 
 ## Resolved baseline choices
 
+- **Process/container boundaries:** `postflowx-web`, `postflowx-server`, PostgreSQL, and isolated plugin runtime(s) are separate deployment units. Core, IPC Gateway, and Watchdog are modules within the single `postflowx-server` process in the initial architecture.
+- **Initial technology baseline:** see ADR-0003. C++20 server, TypeScript/Fastify BFF, TypeScript/React/Vite frontend, with gRPC/Protocol Buffers as the preferred IPC contract pending M0.3 validation.
+- **PostAPI reuse:** deferred until M12 Instagram plugin implementation; it is not a prerequisite for selecting the platform's initial stack.
 - **Plugin data layout:** use one schema per installed plugin/installation, not one schema per user/plugin pair. Per-user ownership is represented in records and enforced by Core. This reduces schema proliferation and means plugin migrations run once per installation rather than once per user. A plugin schema is organizational, not a security boundary by itself.
 - **Web boundary:** `postflowx-web` is a thin BFF plus frontend, not merely a static web server and not a second domain backend. See ADR-0002.
 - **Media:** local persistent volume behind a storage interface.

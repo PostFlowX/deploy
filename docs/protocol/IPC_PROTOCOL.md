@@ -1,16 +1,16 @@
 # IPC Protocol — Version 1 Baseline
 
-**Status:** Contract proposal. Transport implementation is intentionally deferred until the repository/runtime choice is confirmed.
+**Status:** Contract proposal. Preferred transport is gRPC with Protocol Buffers over the private Compose network; implementation and transport-security details are finalized in M0.3.
 
 ## 1. Purpose
 
-The IPC Gateway provides a narrow, versioned channel between internal processes. It is not a replacement for authorization in Core. The initial transport should be private to the Compose network and not published to the host. A simple request/response protocol is preferred; add streaming only when a concrete use case requires it.
+The IPC Gateway provides a narrow, versioned service contract between Web, the server Core, and plugin backends. In the initial architecture the Gateway and Core are modules in the same `postflowx-server` process; the Gateway is still a logical trust/validation boundary. The preferred transport between containers is gRPC with Protocol Buffers over the private Compose network, not published to the host. Use request/response RPCs; add streaming only when a concrete use case requires it. Finalize authentication, deadlines, health checks, compatibility and generated-code workflow in M0.3.
 
 ## 2. Transport requirements
 
 - Private internal network only.
 - Authenticated service identity; use transport authentication appropriate to the selected transport.
-- Explicit request and response schemas.
+- Explicit request and response schemas defined in Protocol Buffers for gRPC methods.
 - Request deadlines and bounded payload sizes.
 - Correlation IDs for tracing.
 - Health endpoint separate from ordinary business routes.
@@ -20,7 +20,7 @@ The IPC Gateway provides a narrow, versioned channel between internal processes.
 
 ## 3. Envelope
 
-Every request uses a versioned envelope equivalent to:
+Every operation uses a versioned typed request/response contract. The following JSON is a conceptual illustration of the logical fields, not a requirement to serialize this envelope as JSON on the wire; the concrete `.proto` messages and RPC methods are defined during M0.3:
 
 ```json
 {
@@ -47,7 +47,7 @@ Rules:
 - Payloads are validated against the operation schema.
 - Unknown fields are rejected for security-sensitive operations unless a schema explicitly allows extension fields.
 
-Responses use:
+Conceptual responses use the following logical shape (the actual gRPC response is defined in Protocol Buffers):
 
 ```json
 {

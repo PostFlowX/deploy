@@ -4,16 +4,25 @@
 
 ## 1. Deployment topology
 
-One customer installation is one Docker Compose project. The intended logical services are:
+One customer installation is one Docker Compose project. The intended initial container/process boundaries are:
 
-1. **Web** — the browser-facing web application: frontend delivery plus a thin Backend-for-Frontend (BFF) for HTTP routes, cookie/session handling and typed request forwarding. It must not access PostgreSQL directly or own business authorization.
-2. **Core** — business logic, authentication/authorization, application data access, plugin registry, secret broker, job manager, migrations and audit events.
-3. **IPC Gateway** — authenticated internal request/response routing between Web, Core, Watchdog and plugin backends. It validates envelopes and enforces transport-level limits; it does not replace Core authorization.
-4. **Watchdog** — independently observes health/readiness and reports lifecycle state. It does not have unrestricted access to the Docker socket.
-5. **PostgreSQL** — private database service, not published to the host by default.
-6. **Plugin runtime(s)** — plugin backend processes isolated from Core, preferably in dedicated containers with reduced privileges and bounded resources.
+1. **Web (`postflowx-web`)** — a separate container for frontend delivery and the thin browser-facing BFF. It handles HTTP routes, cookie/session transport, browser protections and typed request forwarding. It must not access PostgreSQL directly or own business authorization.
+2. **Server (`postflowx-server`)** — a separate container running one primary server process. The **Core**, **IPC Gateway**, and **Watchdog** are internal modules in this process, not separate containers or operating-system processes in the initial architecture.
+3. **PostgreSQL** — a private database container with persistent storage. Only the server's approved data-access layer receives application database credentials; explicitly authorized operational backup/restore paths are documented separately.
+4. **Plugin runtime(s)** — plugin backend code runs outside the server process in an isolated execution environment, preferably in dedicated containers with reduced privileges and bounded resources. The exact provisioning and container granularity are finalized in the plugin-runtime milestones.
 
-A future **Runtime Controller** may be introduced if UI-driven plugin installation must create containers dynamically. It is not part of the initial privileged surface. Do not mount `/var/run/docker.sock` into Web, Core, Watchdog or plugin containers. Docker's documentation warns that control of the daemon can grant broad host-level power; if dynamic runtime control is eventually needed, design a narrowly scoped privileged interface and threat-model it separately ([Docker Engine security](https://docs.docker.com/engine/security/)).
+Docker Compose/container runtime configuration owns container startup, shutdown and restart policies. The Watchdog observes and reports health but does not receive unrestricted Docker control. A future Runtime Controller for dynamic plugin provisioning is not part of the initial privileged surface; it requires a separate narrow interface and threat model.
+
+### Initial technology baseline
+
+- Server: C++20.
+- Web BFF: TypeScript + Fastify.
+- Frontend: TypeScript + React + Vite.
+- Preferred typed internal RPC contract: gRPC + Protocol Buffers, pending validation in M0.3.
+- Database: PostgreSQL.
+- Deployment: Docker Compose.
+
+The PostgreSQL client library, build/dependency tooling, transport authentication and detailed plugin isolation mechanism remain open implementation decisions for their assigned milestones. PostAPI source review is deferred until Instagram plugin implementation.
 
 ## 2. Trust boundaries
 
@@ -57,13 +66,13 @@ A future **Runtime Controller** may be introduced if UI-driven plugin installati
 
 ### Watchdog
 
-- Poll independent health endpoints and/or consume authenticated heartbeats.
-- Track `STARTING`, `HEALTHY`, `DEGRADED`, `UNRESPONSIVE`, `STOPPED` and `UNKNOWN`.
-- Distinguish a failed process from a failed health-check path.
+- Run as an internal module in the server process and use explicit interfaces to observe internal module state and authorized dependency health.
+- Track `STARTING`, `HEALTHY`, `DEGRADED`, `UNRESPONSIVE`, `STOPPED` and `UNKNOWN` where the monitored target can report those states.
+- Distinguish a failed dependency/health-check path from a failed server process. The Watchdog cannot continue observing the server after the entire process terminates; Docker/operator monitoring owns that boundary.
 - Track last success, consecutive failures, startup duration and failure history.
 - Report health to the admin interface through a read-only, authenticated interface.
 - Do not restart arbitrary containers directly in v1. Docker restart policies are the initial lifecycle owner; application-level recovery is handled by the responsible service. This avoids giving a monitoring service host-level control.
-- Its own failure must not mark every monitored service unhealthy; its health must be visible to Docker/operator monitoring.
+- An internal Watchdog failure must not mark every monitored service unhealthy; server-process health remains visible to Docker/operator monitoring.
 
 ### PostgreSQL
 
@@ -120,15 +129,15 @@ MVP uses a persistent local volume behind a `MediaStorage` interface. PostgreSQL
 
 ## 7. Process boundaries and scope control
 
-Separate containers are justified for Web, Core, Gateway, Watchdog, PostgreSQL and plugin runtimes because they have distinct trust/operational boundaries. This does not justify splitting every Core module into a service. Job Manager, Secret Broker, Plugin Registry, Authorization and Data Access are modules inside Core in v1.
+Separate containers are used for Web, the combined Server process, PostgreSQL and isolated plugin runtime(s). Core, Gateway and Watchdog are modules within the server process in the initial architecture. Job Manager, Secret Broker, Plugin Registry, Authorization and Data Access are modules inside Core in v1.
 
-The Gateway is a separate process by design, but should remain thin. Its availability is a dependency; Web/Core/plugin clients need bounded timeouts and clear failure responses. Watchdog must probe the Gateway and Core independently, not infer their health solely through the Gateway. The Web BFF is also thin: it owns browser/HTTP concerns, not domain logic or authoritative authorization.
+The Gateway is an internal module in the server process, but its interface remains a logical contract. Web/plugin clients need bounded timeouts and clear failure responses. The Watchdog observes internal module health through explicit interfaces and must not be treated as an independent process monitor. Health reporting must distinguish Core/Gateway module failures where possible, rather than inferring all health solely from one end-to-end Gateway request. The Web BFF remains thin and owns browser/HTTP concerns, not domain logic or authoritative authorization.
 
 ## 8. Startup and shutdown
 
 - Compose starts PostgreSQL and waits for database readiness.
-- Core waits for database readiness and completes migrations before reporting ready.
-- Gateway starts and exposes readiness only when its routing configuration is valid.
+- Core waits for database readiness and completes migrations before the server reports application readiness.
+- The Gateway module becomes ready only when its routing configuration and service handlers are valid.
 - Web becomes ready when it can serve the UI and its BFF endpoints; it may show a clear degraded service screen if Gateway/Core is unavailable. Readiness should distinguish “can serve UI” from “application operations are available.”
 - Plugin runtimes report startup readiness and declared plugin/API compatibility.
 - Watchdog marks dependencies as `UNKNOWN` until it has a successful observation; missing observations are not proof that every service is dead.

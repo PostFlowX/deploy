@@ -2,13 +2,15 @@
 
 Priorities: **P0** required foundation / MVP blocker; **P1** MVP capability; **P2** later enhancement; **P3** optional/future. Status is planning-only.
 
+Initial technology baseline (subject to milestone validation): C++20 server; TypeScript + Fastify BFF; TypeScript + React + Vite frontend; PostgreSQL; Docker Compose. gRPC + Protocol Buffers is the preferred IPC contract pending M0.3 validation. PostAPI reuse review is deferred until Instagram plugin implementation.
+
 ## A. Deployment and operations
 
 - **P0** One documented Docker Compose deployment for the complete baseline stack.
-- **P0** Separate Web, Core, IPC Gateway, Watchdog and PostgreSQL services; plugin runtimes are isolated from Core.
+- **P0** Separate Web, combined Server (Core + IPC Gateway + Watchdog modules), and PostgreSQL containers; plugin runtimes are isolated from the server process.
 - **P0** Persistent PostgreSQL and media volumes.
 - **P0** Internal services are not published to host interfaces by default.
-- **P0** Health checks, readiness checks, structured logs and graceful shutdown.
+- **P0** Health/readiness checks, structured logs and graceful shutdown; internal module health is distinguished from server-process health, which is monitored by the container runtime/operator.
 - **P0** Version-pinned images and documented configuration/secrets.
 - **P1** Backup and restore scripts with tested recovery instructions.
 - **P1** Upgrade and rollback procedure, including database migration rules.

@@ -37,11 +37,15 @@ The product should make social publishing easier to operate while keeping custom
 ## 4. Deployment and operating model
 
 - One Compose project per customer installation.
-- Separate containers for Web (frontend + thin BFF), Core, IPC Gateway, Watchdog, PostgreSQL, and each enabled plugin runtime where practical.
+- Separate containers for Web (frontend + thin BFF), the combined Server process, PostgreSQL, and isolated plugin runtime(s) where practical. Core, IPC Gateway and Watchdog are internal modules within the `postflowx-server` process in the initial architecture.
 - Only the Web entry point is exposed to the host by default. PostgreSQL and internal services remain on private networks.
 - Persistent volumes are used for database state, media files, and required operational state.
 - Configuration and encryption keys are supplied as deployment secrets or protected files, never committed to source control.
 - The deployment repository pins compatible image versions. Production deployments must not rely on floating `latest` tags.
+
+## 4.1 Initial technology baseline
+
+The proposed initial implementation stack is C++20 for `postflowx-server`, TypeScript + Fastify for the Web BFF, TypeScript + React + Vite for the frontend, PostgreSQL for persistence, and Docker Compose for deployment. gRPC + Protocol Buffers is the preferred typed IPC contract, subject to M0.3 validation. Detailed libraries, generated-code workflow, transport authentication and plugin isolation remain assigned to their relevant milestones. PostAPI source review is deferred until Instagram plugin implementation.
 
 ## 5. Roles
 

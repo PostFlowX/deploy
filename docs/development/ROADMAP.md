@@ -35,11 +35,57 @@ M10 is intentionally split in practice: build a minimal BFF/app shell early enou
 
 ### M0.1 Component responsibilities
 
-- Confirm Web BFF, Core, Gateway, Watchdog, PostgreSQL and plugin-runtime responsibilities.
-- Decide which are separate containers and which are modules inside Core.
-- Select the initial language/framework after reviewing reusable PostAPI code and the requirements for Web BFF, Core and service processes.
-- Document trust boundaries and forbidden communication paths.
-- **Accept when:** architecture and ADR agree; no component has overlapping ownership of authorization, job state or container lifecycle.
+**Architecture baseline:** agreed in discussion; cross-document reconciliation required before acceptance.
+
+#### Component and process boundaries
+
+- `postflowx-web`: separate container containing the frontend and thin Backend-for-Frontend (BFF).
+- `postflowx-server`: separate container running one primary server process. Core, IPC Gateway and Watchdog are internal modules in this process, not separate containers or OS processes in the initial architecture.
+- PostgreSQL: separate container with persistent storage; only the server's approved data-access layer receives application database credentials.
+- Plugin backend runtime: isolated execution outside the Core/server process. Runtime container granularity and provisioning must preserve plugin isolation and are finalized in the plugin-runtime milestones.
+- Docker Compose/container runtime owns container startup, shutdown and restart policies.
+
+#### Responsibilities and ownership
+
+- **Web BFF:** browser-facing HTTP routes, frontend delivery, cookie/session transport, CSRF/origin protections, request validation, response shaping and forwarding through the IPC Gateway. No direct PostgreSQL access, authoritative business authorization or publishing job ownership.
+- **Core:** business logic, identity, authoritative session validation, authorization, resource ownership, secrets, application data access, publishing job state and transitions, scheduling decisions and audit events.
+- **IPC Gateway:** internal transport, service identity/protocol validation, request limits/deadlines, correlation IDs and dispatch through explicit Core interfaces. It does not own domain authorization or business logic.
+- **Watchdog:** internal health observations, diagnostics and permitted recovery workflows. It receives instructions through Core-defined interfaces and reports status through defined interfaces. It does not control Docker directly in the initial release.
+- **PostgreSQL:** persistent structured storage; it does not make application authorization decisions.
+- **Plugin Runtime:** executes plugin backend code outside the server process using authenticated, capability-limited interfaces. No direct database credentials, arbitrary SQL or Docker socket.
+- **Container lifecycle:** Docker Compose/container runtime configuration. The Watchdog may report failures but does not directly restart/manage containers in the initial release.
+
+#### Initial technology baseline
+
+- Server: C++20.
+- Server IPC: gRPC + Protocol Buffers as the preferred typed RPC contract, subject to validation in M0.3.
+- Web BFF: TypeScript + Fastify.
+- Frontend: TypeScript + React + Vite.
+- Database: PostgreSQL.
+- Deployment: Docker Compose.
+
+The Web and Server remain independently buildable. The concrete PostgreSQL client library, build/dependency tooling, gRPC transport authentication/configuration, and plugin isolation mechanism remain explicit technical decisions for their assigned milestones. PostAPI review is deferred until M12 (Instagram integration).
+
+#### Trust boundaries and forbidden paths
+
+- Browser → IPC Gateway directly: forbidden; browser requests enter through Web BFF.
+- Web BFF → PostgreSQL: forbidden.
+- Plugin → PostgreSQL or Docker socket: forbidden.
+- Web BFF → Plugin Runtime directly for application operations: forbidden; mediate through server-defined interfaces.
+- Watchdog → Docker lifecycle API: forbidden in the initial release.
+- Plugin → internal Core implementation: forbidden; expose only documented, authorized interfaces.
+- Only the Web entry point is exposed to host interfaces by default.
+- Request validation is not authorization. Core validates actor identity, permissions and resource ownership for every protected operation.
+
+#### Acceptance criteria
+
+- [ ] Component responsibilities and container/process boundaries are documented consistently.
+- [ ] Trust boundaries and forbidden communication paths are documented.
+- [ ] Authorization, publishing job state and container lifecycle each have a single authoritative owner.
+- [ ] Initial languages/frameworks are recorded in ADR-0003, and remaining technical decisions are assigned to later milestones.
+- [ ] Architecture, ADRs, IPC protocol, feature list, PRD and roadmap contain no contradictory ownership or process-boundary assumptions.
+
+**Accept when:** the relevant documents agree, remaining decisions are explicitly assigned to later milestones, and all criteria above are satisfied.
 
 ### M0.2 Lifecycle and failure model
 
@@ -70,7 +116,7 @@ M10 is intentionally split in practice: build a minimal BFF/app shell early enou
 ### M1.1 Repository boundaries
 
 - `postflowx-web`: frontend plus thin BFF (browser-facing HTTP/API, cookie/session transport, CSRF/origin protections, typed forwarding through Gateway). No domain authorization or direct database access.
-- `postflowx-server`: Core, Gateway, Watchdog and plugin runtime images/modules, separated by explicit entry points.
+- `postflowx-server`: one server container/process containing Core, IPC Gateway and Watchdog as internal modules; plugin backend runtime is isolated outside the server process and is designed in M8.
 - `postflowx-deploy`: Compose files, sample environment, health checks and deployment docs.
 - **Accept when:** responsibilities and versioning policy are documented; no secrets committed.
 
@@ -81,14 +127,18 @@ M10 is intentionally split in practice: build a minimal BFF/app shell early enou
 
 ### M1.3 Minimal service containers
 
-- Web BFF, Core, Gateway and Watchdog return health/readiness status; Web distinguishes UI availability from application-operation availability.
-- PostgreSQL readiness and persistent volume are configured.
-- **Accept when:** restart preserves database state; only intended public port is exposed.
+- `postflowx-web`, `postflowx-server`, and PostgreSQL have minimal runnable containers and explicit health/readiness behavior.
+- Core, IPC Gateway and Watchdog are modules in the same server process, not separate service containers.
+- The server exposes only its private IPC endpoint; PostgreSQL and internal endpoints are not published to host interfaces by default.
+- PostgreSQL readiness and persistent storage are configured.
+- Plugin runtime containers are introduced with M8, when the runtime contract and isolation controls are implemented.
+- **Accept when:** restart preserves database state; only the intended Web entry point is exposed publicly; internal health is distinguishable from process-level health.
 
 ### M1.4 End-to-end smoke test
 
-- Browser reaches Web BFF; BFF reaches Gateway/Core; Core reaches PostgreSQL; Watchdog probes Gateway/Core independently.
-- **Accept when:** automated test verifies expected healthy and unavailable states.
+- Browser reaches Web BFF; BFF reaches the server IPC endpoint; the server Core reaches PostgreSQL.
+- Verify internal Core/Gateway health through explicit in-process interfaces and verify server-process health through container/runtime health checks.
+- **Accept when:** automated tests verify healthy and unavailable states without treating Core, Gateway, and Watchdog as separate containers.
 
 ## M2 — Engineering foundation
 
@@ -111,8 +161,9 @@ M10 is intentionally split in practice: build a minimal BFF/app shell early enou
 ## M5 — Health model and Watchdog
 
 - Implement independent observations, lifecycle states, startup timeout, repeated-failure detection and admin-visible health model.
-- Monitor Web, Core, Gateway, PostgreSQL and plugin runtimes; monitor Watchdog itself via container/operator health.
-- **Accept when:** Gateway outage is distinguishable from Core outage; Watchdog failure does not mark every service dead; Docker restart behavior is documented/tested.
+- Monitor Web, PostgreSQL and plugin runtimes through independent health paths; inspect Core, Gateway and Watchdog module health through explicit in-process interfaces.
+- Monitor whole-server process health through Docker/operator health checks. Ensure the health check can detect a failed Watchdog module without treating all modules as failed.
+- **Accept when:** internal module failures are distinguishable where observable; Watchdog failure does not mark every service dead; process-level failure and Docker restart behavior are documented/tested.
 
 ## M6 — Authentication and authorization
 
