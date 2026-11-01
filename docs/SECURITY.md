@@ -3,13 +3,15 @@
 Threat model + non-functional requirements in one place. Decisions behind it: [`DECISIONS.md`](DECISIONS.md).
 
 ## 1. Assets and trust model
+
 **Assets:** provider tokens, user identities/sessions/password hashes, posts/media/schedules, the **master key** and DB password, internal TLS keys, plugin packages (pinned hashes), audit trail, availability.
 **In scope:** remote attacker on the web entry point · authenticated user reaching another user's data/admin functions · buggy or compromised bundled/approved plugin · compromised web container · malicious provider content (callback params, API responses, descriptors) · operator mistakes/crashes · supply chain.
 **Assumptions:** host root can read everything · **v1 plugins are trusted by policy** (process isolation limits blast radius, it is no sandbox for hostile code) · containers are not VM boundaries · single customer per host.
 
 ## 2. Threats (T) → mitigations
+
 | ID | Threat | Mitigation | Residual |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | T0 | CSRF / weak session | cookie flags, Origin check + CSRF header, hashed server-side sessions, rotation, idle/absolute expiry, rate limit (D-14) | XSS = session theft → CSP, escaping |
 | T1 | User A reads user B's data | actor from session/call token only; owner check on every operation; deny by default; hidden resources = `NOT_FOUND` | — |
 | T2 | Malicious/compromised plugin | no DB creds/keys; grants reviewed; call tokens; own UID, no caps, `no_new_privs`, rlimits, clean env; read-only hash-pinned plugin dir; per-plugin limits; audit | can misuse what it's granted, can use any egress host, can try the DB port (auth stops it) → only trusted plugins in v1 |
@@ -32,6 +34,7 @@ Threat model + non-functional requirements in one place. Decisions behind it: [`
 | T19 | Malicious descriptor content | restricted schema subset; escaped text only; SVG sanitized + size-limited; strict CSP | — |
 
 ## 3. Targets (NFR) — measure, don't over-engineer
+
 - **Reliability:** clean install works from the docs; Core not ready until migrations done; restarts lose no jobs; plugin crash never affects Core/Gateway/other plugins (stack `DEGRADED`, container healthy); restart backoff 1 s→60 s, crash loop = 5 in 5 min; shutdown drains ≤ 30 s, `stop_grace_period` 45 s; restore drill before release.
 - **Performance baseline (not a scale promise):** 10 concurrent users, 100 pending jobs, 5 concurrent attempts; authenticated read BFF→Core p95 < 500 ms; Gateway hop p95 < 20 ms (UDS) / < 100 ms (mTLS); upload limit 100 MiB per item (chunked 64 KiB); everything bounded (queues, bodies, uploads, tasks, storage quotas). Defaults: `server` 1 GiB / 512 pids, `web` 512 MiB / 128 pids, plugin 256 MiB.
 - **Security:** only web published, default `127.0.0.1`; production refuses to run without mTLS; Argon2id; no secrets in logs; authorization tests for every sensitive operation; C++ with warnings-as-errors, ASan/UBSan in CI, clang-tidy.
@@ -40,6 +43,7 @@ Threat model + non-functional requirements in one place. Decisions behind it: [`
 - **Portability:** Docker Compose on one Linux host; production images pinned by digest, never `latest`.
 
 ## 4. Must-pass tests (run in CI or `scripts/*-smoke.sh`)
+
 1. **Cross-user:** read/write attempts per resource family; user cannot grant themselves admin/capabilities.
 2. **Plugin UID (`security-smoke.sh`):** cannot read `/run/secrets/*`, `/run/postflowx/secrets/*`, Core state, media, `/proc/<other>/{environ,mem,fd}`; cannot signal/ptrace others; cannot connect to another plugin's socket; cannot authenticate to PostgreSQL.
 3. **Call tokens:** expired, revoked, wrong plugin, wrong user scope, missing on user-scoped call → rejected.
@@ -51,4 +55,5 @@ Threat model + non-functional requirements in one place. Decisions behind it: [`
 9. **Failure injection:** plugin crash, resource exhaustion, Gateway/DB outage, Core crash **during a dispatched attempt** → no corruption, no duplicates (`OUTCOME_UNKNOWN` path exercised).
 
 ## 5. Residual risks
+
 Host root sees everything · a trusted plugin can misuse any granted capability/lease and has open egress · isolation depends on kernel/runtime · Gateway is in the trusted base, Watchdog is a small privileged component · provider APIs may change or reject; ambiguous publish results can't always be resolved automatically.

@@ -21,7 +21,7 @@ Browser ─► web (React + Fastify BFF) ──gRPC/mTLS──► server contain
 **Start here → [`docs/ROADMAP.md`](docs/ROADMAP.md)** (work top to bottom, Step 0 → 11, then the Instagram plugin).
 
 | File | Content |
-|---|---|
+| --- | --- |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | the path, with checkpoints and "done when" per step |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | product summary + all features with priority and step |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | containers, processes, sockets, identity, flows, data |

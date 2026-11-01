@@ -5,7 +5,7 @@ Replaces all ADRs and the open-decisions list. **These are decided — build on 
 ## 1. Decisions
 
 | ID | Decision | Why | Revisit if |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | D-01 | One Compose project per customer: containers `web`, `server`, `db` (+ optional `proxy`, profile `tls`). Nothing else. | Simple to run and reason about | multi-host / HA becomes a goal |
 | D-02 | `server` = **one container, several OS processes**: Watchdog (PID 1), Gateway, Core, one process per plugin. All talk **gRPC**: Unix sockets inside, **TCP + mTLS** web↔server. | Only Core may hold DB credentials and the key; plugin crash ≠ Core crash | a process boundary costs more than it protects |
 | D-03 | **Core** owns authorization, ownership, secrets, jobs and is the **only DB client**. **Gateway** only routes, limits and assigns caller identity. Web BFF never touches the DB and is never an authority. | One authorization path | — |
@@ -29,7 +29,8 @@ Replaces all ADRs and the open-decisions list. **These are decided — build on 
 
 ## 2. Fixed defaults (no research needed)
 
-**D-14 Sessions / CSRF / passwords**
+### **D-14 Sessions / CSRF / passwords**
+
 - Session token: 32 random bytes (CSPRNG), base64url; DB stores only **SHA-256(token)**.
 - Cookie: `HttpOnly; Secure; SameSite=Lax; Path=/`; name `__Host-pfx_session` in production, `pfx_session` in dev over `http://localhost` (the `__Host-` prefix needs HTTPS).
 - Lifetimes: idle 12 h, absolute 7 days; rotate on login and on privilege change; logout deletes server-side; admin can revoke all sessions of a user.
@@ -37,7 +38,8 @@ Replaces all ADRs and the open-decisions list. **These are decided — build on 
 - Login rate limit: 5 failures / 15 min per account+IP, then exponential delay.
 - Passwords: min 12 chars, no composition rules; **Argon2id via libsodium** `crypto_pwhash_str` at MODERATE (benchmark once; if > ~1 s on your host use INTERACTIVE).
 
-**D-12 Credential encryption**
+### **D-12 Credential encryption**
+
 - libsodium **XChaCha20-Poly1305** (`crypto_aead_xchacha20poly1305_ietf_*`).
 - Blob: `0x01 | key_id (4 B) | nonce (24 B) | ciphertext+tag`. AAD = `"pfx-cred-v1" | account_id`.
 - Master key: 32 random bytes, base64 in secret file `core_master_key`; derive a subkey with `crypto_kdf_derive_from_key` (context `"pfxcreds"`). `key_id` = first 4 bytes of SHA-256(master key).
@@ -45,26 +47,29 @@ Replaces all ADRs and the open-decisions list. **These are decided — build on 
 - **Back up the key separately from DB backups; without it credentials are unrecoverable.**
 - Memory: `sodium_memzero` after use; secret values live in a wrapper type that cannot be printed/logged.
 
-**D-13 Time**
+### **D-13 Time**
+
 - Store `run_at` (UTC) + IANA zone. Reference clock = DB `now()`.
 - Local time in a DST **gap** → shifted forward by the gap (`Europe/Berlin` 2027-03-28 02:30 → 03:30 local = 01:30 UTC). **Overlap** → first occurrence (2027-10-31 02:30 → 00:30 UTC). (Vectors verified with Python `zoneinfo`.) UI shows the resolved instant.
 - Late job: runs if within `missed_window` (15 min), else `FAILED(MISSED_WINDOW)` and the user must reschedule.
 - tz library: C++20 `<chrono>` if your compiler has `zoned_time`, else Howard Hinnant's `date` (vcpkg) with system tzdata.
 - Scheduler: poll every 5 s, lease 5 min with heartbeat, default 5 concurrent attempts. Retries: backoff 1 min → 5 min → 30 min → 2 h, max 5 attempts (configurable); `RATE_LIMITED` honors `retry_after`.
 
-**D-15 Database**
+### **D-15 Database**
+
 - Schema `core`; role `pfx_owner` (migrations, DDL) and `pfx_app` (DML only); `REVOKE CREATE ON SCHEMA public`; `ALTER ROLE pfx_app SET search_path = core`.
 - Migrations: `migrations/NNNN_name.sql`, forward-only, checksum stored, advisory lock, one transaction each.
 - `statement_timeout` 30 s, `lock_timeout` 5 s. IDs: UUID (`gen_random_uuid()`). All timestamps UTC.
 - No SQL identifier ever comes from external input (there are no dynamic schemas).
 
-**D-16 Admin bootstrap**
+### **D-16 Admin bootstrap**
+
 - `docker compose run --rm server postflowx-admin create-admin`: password via TTY only (never argv/env), refuses if an admin exists, writes an audit event.
 
 ## 3. Verified (fill in while building; one line each)
 
 | Check | Step | Result · date · versions |
-|---|---|---|
+| --- | --- | --- |
 | C1 C++ build reproducible (cold/warm time) | 1 | |
 | C2 mTLS rejects bad certs; client CN readable | 1 | |
 | C3 secret file perms + `DAC_READ_SEARCH` (rootful / rootless) | 1 | |
@@ -76,5 +81,5 @@ Replaces all ADRs and the open-decisions list. **These are decided — build on 
 ## 4. Change log
 
 | Date | Change | Why | Revisit if |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 2026-11-01 | Lean doc set; spikes replaced by checkpoints C1–C7 inside Steps 1–3 | Solo speed; same risk checks, no throw-away code | a checkpoint fails late and costs > 1 week |
