@@ -1,5 +1,4 @@
-// DRAFT — mirrors the sketch in docs/protocol/IPC_PROTOCOL.md; finalized in milestone M0.3.
-// From M0.3 on this directory is the single source of truth (see proto/README.md).
+// DRAFT — source of truth (rules: docs/CONTRACTS.md). Finalize while building; frozen after ROADMAP Step 8.
 
 syntax = "proto3";
 package postflowx.plugin.v1;

@@ -1,8 +1,8 @@
-# PostFlowX — Compose skeleton (planning baseline, finalized in M1.2)
+# PostFlowX — Compose skeleton (verified step by step in ROADMAP Step 1)
 #
-# This file describes the target topology from docs/architecture/ARCHITECTURE.md.
-# It is a SKELETON: the server/web images do not exist yet (see ROADMAP M1).
-# Items marked "M1.2" must be verified/pinned when the first images exist.
+# This file describes the target topology from docs/ARCHITECTURE.md.
+# It is a SKELETON: the server/web images do not exist yet (see docs/ROADMAP.md, Step 1).
+# Items marked "CHECK Cn" are verified in Step 1/2 (checkpoints in docs/ROADMAP.md); pin versions there.
 #
 # Layout assumption (sibling checkouts):
 #   ../postflowx-server   C++ server (watchdog, gateway, core, plugin host)
@@ -27,7 +27,7 @@ services:
   # ---------------------------------------------------------------------------
   db:
     <<: *common
-    image: postgres:18-alpine # M1.2: pin exact version + digest before any release
+    image: postgres:18-alpine # CHECK C4: pin exact version + digest before any release
     environment:
       POSTGRES_DB: ${POSTFLOWX_DB_NAME:-postflowx}
       POSTGRES_USER: ${POSTFLOWX_DB_USER:-postflowx}
@@ -35,7 +35,7 @@ services:
     secrets:
       - db_password
     volumes:
-      # PostgreSQL 18+ images expect the volume at /var/lib/postgresql (M1.2: verify).
+      # PostgreSQL 18+ images expect the volume at /var/lib/postgresql (CHECK C4: verify).
       - pgdata:/var/lib/postgresql
     networks:
       - backend
@@ -47,7 +47,7 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
-  # Server container — ONE container, several OS processes (see ADR-0004):
+  # Server container — ONE container, several OS processes (see docs/DECISIONS.md D-02):
   #   watchdog (PID 1, root, minimal caps) -> gateway, core, plugin processes
   # Only the watchdog starts as root; it drops privileges per child process.
   # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
       - /run/postflowx:size=8m,mode=0755 # unix sockets + re-homed secrets (created by the watchdog)
-    # Minimal capabilities for the watchdog (see ADR-0004). Children drop everything.
+    # Minimal capabilities for the watchdog (see docs/DECISIONS.md D-07). Children drop everything.
     cap_drop:
       - ALL
     cap_add:
@@ -88,7 +88,8 @@ services:
       - SETGID
       - CHOWN
       - KILL
-      - DAC_READ_SEARCH # read 0400 secret files owned by the host user (M1.2: verify)
+      - DAC_READ_SEARCH # read 0400 secret files owned by the host user (CHECK C3: verify)
+      # CHECK C5: dropping the bounding set for children may additionally need SETPCAP (docs/DECISIONS.md D-07)
     security_opt:
       - no-new-privileges:true
     pids_limit: 512
@@ -106,7 +107,7 @@ services:
       - egress # outbound internet for plugins calling provider APIs
 
   # ---------------------------------------------------------------------------
-  # Web container — React SPA + thin Fastify BFF (see ADR-0002).
+  # Web container — React SPA + thin Fastify BFF (docs/ARCHITECTURE.md §4).
   # The ONLY service that is published to the host.
   # ---------------------------------------------------------------------------
   web:
@@ -141,7 +142,7 @@ services:
     pids_limit: 128
     mem_limit: ${POSTFLOWX_WEB_MEM:-512m}
     healthcheck:
-      test: ["CMD", "node", "dist/healthcheck.js"] # M1.3: placeholder; must distinguish "can serve UI" from "operations available"
+      test: ["CMD", "node", "dist/healthcheck.js"] # Step 1: placeholder; must distinguish "can serve UI" from "operations available"
       interval: 10s
       timeout: 5s
       retries: 5
@@ -152,13 +153,13 @@ services:
 
   # ---------------------------------------------------------------------------
   # Optional TLS reverse proxy (profile "tls"). Required for Instagram in production:
-  # Meta needs HTTPS for the OAuth redirect URI and public media URLs. (M12)
+  # Meta needs HTTPS for the OAuth redirect URI and public media URLs. (Step 11)
   # Usage: docker compose --profile tls up -d   (see Caddyfile.example)
   # ---------------------------------------------------------------------------
   proxy:
     <<: *common
     profiles: ["tls"]
-    image: caddy:2-alpine # M12: pin exact version + digest
+    image: caddy:2-alpine # Step 11: pin exact version + digest
     environment:
       POSTFLOWX_DOMAIN: ${POSTFLOWX_DOMAIN:-}
     ports:

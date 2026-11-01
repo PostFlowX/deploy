@@ -5,11 +5,8 @@ I see you have discovered PostFlowX. This deploy repo is the "storage" which exp
 
 ## What is PostFlowX?
 
-A self-hosted social publishing platform. One installation = one Docker Compose stack with three containers: `web` (frontend + thin BFF), `server` (several cooperating processes) and `db` (PostgreSQL). Platform integrations such as Instagram are **plugins**: separate executables that are hosted by the server, built in their own repositories and managed from the web UI.
-
-The plan is in two steps: **first the infrastructure** ("Infra v0.1", verified with a demo plugin), **then the Instagram plugin** in its own repository.
-
-## Architecture at a glance
+A self-hosted social publishing platform. One installation = one Docker Compose stack: `web` (frontend + thin BFF), `server` (several cooperating processes) and `db` (PostgreSQL). Integrations such as Instagram are **plugins**: separate executables hosted by the server, built in their own repos and managed from the web UI.
+Plan: **first the infrastructure** (Infra v0.1, verified with a demo plugin), **then the Instagram plugin**.
 
 ```text
 Browser ─► web (React + Fastify BFF) ──gRPC/mTLS──► server container ──► db (PostgreSQL)
@@ -19,48 +16,30 @@ Browser ─► web (React + Fastify BFF) ──gRPC/mTLS──► server contain
                                                      └─ Plugins   (one process each, own UID, gRPC over Unix sockets)
 ```
 
-Details: [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
+## Where to look
 
-## This Repo features
+**Start here → [`docs/ROADMAP.md`](docs/ROADMAP.md)** (work top to bottom, Step 0 → 11, then the Instagram plugin).
 
-The whole planning set for the project: architecture, decision records (ADRs), roadmap, plugin specification, PRD, NFR, feature list, IPC protocol and threat model, plus the first deployment files (Compose skeleton, secret generation script).
-
-| Topic | File |
+| File | Content |
 |---|---|
-| Product requirements | [`docs/product/PRD.md`](docs/product/PRD.md) |
-| Feature list with priorities | [`docs/product/FEATURE_LIST.md`](docs/product/FEATURE_LIST.md) |
-| Architecture | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) |
-| Decisions (ADR-0001 … 0005) | [`docs/decisions/`](docs/decisions/) |
-| Open decisions and gates | [`docs/decisions/OPEN_DECISIONS.md`](docs/decisions/OPEN_DECISIONS.md) |
-| IPC protocol and contract sketches | [`docs/protocol/IPC_PROTOCOL.md`](docs/protocol/IPC_PROTOCOL.md) |
-| Contracts (`.proto`, drafts until M0.3) | [`proto/`](proto/) |
-| Plugin specification | [`docs/plugins/PLUGIN_SPEC.md`](docs/plugins/PLUGIN_SPEC.md) |
-| Non-functional requirements | [`docs/quality/NFR.md`](docs/quality/NFR.md) |
-| Threat model | [`docs/security/THREAT_MODEL.md`](docs/security/THREAT_MODEL.md) |
-| Roadmap (Phase A infrastructure, Phase B Instagram) | [`docs/development/ROADMAP.md`](docs/development/ROADMAP.md) |
-| Plan revision notes | [`docs/development/PLAN_REVISION_2.md`](docs/development/PLAN_REVISION_2.md) |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | the path, with checkpoints and "done when" per step |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | product summary + all features with priority and step |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | containers, processes, sockets, identity, flows, data |
+| [`docs/CONTRACTS.md`](docs/CONTRACTS.md) | IPC rules + plugin spec (messages live in [`proto/`](proto/)) |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | all decisions, fixed defaults, verified checks |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | threats, targets, must-pass tests |
 
-## Repositories (planned)
+Repos: `postflowx-deploy` (this one: Compose, docs, `proto/`) · `postflowx-server` (watchdog, gateway, core, `sdk/`, `plugins/demo/`) · `postflowx-web` · later `postflowx-plugin-instagram`.
 
-| Repository | Content |
-|---|---|
-| `postflowx-deploy` | this repo: Compose, scripts, docs and the `.proto` contracts in [`proto/`](proto/) (single source of truth) |
-| `postflowx-server` | watchdog, gateway, core |
-| `postflowx-web` | frontend + BFF |
-| `postflowx-plugin-sdk` | SDK, reference plugin, test harness (from M9) |
-| `postflowx-plugin-instagram` | the Instagram plugin (Phase B) |
-
-## Status
-
-Planning, revision 2. No application code yet. Next step: milestone **M0** (contracts and technical spikes), see the [roadmap](docs/development/ROADMAP.md).
-
-## Quick start (will work from milestone M1)
+## Quick start (works from Step 1)
 
 ```bash
-./scripts/init-secrets.sh      # generates DB password, master key, internal CA + certificates into ./secrets
-cp .env.example .env           # non-secret configuration
-docker compose up --build      # needs the sibling checkouts ../postflowx-server and ../postflowx-web
+bash scripts/init-secrets.sh   # DB password, master key, internal CA + certs into ./secrets (git-ignored)
+cp .env.example .env
+docker compose up --build      # needs sibling checkouts ../postflowx-server and ../postflowx-web
 ```
+
+**Status:** planning done, no application code yet.
 
 ## Disclaimer
 

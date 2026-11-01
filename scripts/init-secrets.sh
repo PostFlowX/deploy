@@ -5,7 +5,7 @@
 #   - internal CA + server cert + web client cert (ECDSA P-256) for mTLS between web and server
 #
 # Refuses to overwrite existing secrets unless --force is given.
-# IMPORTANT: back up secrets/core_master_key SEPARATELY from database backups (see docs/quality/NFR.md).
+# IMPORTANT: back up secrets/core_master_key SEPARATELY from database backups (see docs/SECURITY.md).
 set -euo pipefail
 
 FORCE=0
