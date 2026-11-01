@@ -1,0 +1,38 @@
+// DRAFT — mirrors the sketch in docs/protocol/IPC_PROTOCOL.md; finalized in milestone M0.3.
+// From M0.3 on this directory is the single source of truth (see proto/README.md).
+
+syntax = "proto3";
+package postflowx.watchdog.v1;
+
+service WatchdogControl {
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  rpc StartPlugin(PluginRef) returns (ProcessStatus);
+  rpc StopPlugin(PluginRef) returns (ProcessStatus);
+  rpc RestartPlugin(PluginRef) returns (ProcessStatus);
+}
+
+message PluginRef {
+  string plugin_id = 1;
+  string version = 2;
+}
+message ListProcessesRequest {}
+message ListProcessesResponse { repeated ProcessStatus processes = 1; }
+
+enum ProcessState {
+  PROCESS_STATE_UNSPECIFIED = 0;
+  PROCESS_STATE_STARTING = 1;
+  PROCESS_STATE_HEALTHY = 2;
+  PROCESS_STATE_DEGRADED = 3;
+  PROCESS_STATE_UNRESPONSIVE = 4;
+  PROCESS_STATE_CRASH_LOOP = 5;
+  PROCESS_STATE_STOPPED = 6;
+  PROCESS_STATE_UNKNOWN = 7;
+}
+message ProcessStatus {
+  string name = 1;            // "core", "gateway", "plugin:<id>"
+  ProcessState state = 2;
+  int32 consecutive_failures = 3;
+  int64 last_success_unix_ms = 4;
+  int64 started_unix_ms = 5;
+  int32 restart_count = 6;
+}

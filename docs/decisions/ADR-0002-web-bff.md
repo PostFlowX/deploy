@@ -1,31 +1,39 @@
 # ADR-0002: Web Application as a Thin Backend-for-Frontend
 
-- **Status:** Proposed baseline decision
-- **Date:** 2026-10-19
+- **Status:** Proposed baseline — **revision 2** (2026-10-22)
+- **Date:** 2026-10-19 (revised 2026-10-22)
 
 ## Context
 
-The browser needs HTTP routes, session/cookie handling, frontend delivery and a safe interface to internal application operations. A static-file server alone cannot provide the required browser-facing behavior. Conversely, putting domain logic and database access in the Web tier would duplicate Core responsibilities and create another authorization path.
+The browser needs HTTP routes, session/cookie handling, frontend delivery and a safe interface to internal application operations. A static-file server alone cannot provide that. Putting domain logic or database access into the web tier would duplicate Core responsibilities and create a second authorization path.
+
+Revision 2 adds three browser-facing duties that follow from the plugin model: OAuth callbacks for provider account connections, a public endpoint for short-lived signed media URLs, and rendering of declarative plugin descriptors.
 
 ## Decision
 
-1. `postflowx-web` is a web application containing the frontend and a thin Backend-for-Frontend (BFF).
-2. The BFF owns browser-facing HTTP/API routes, cookie/session transport, CSRF and other browser-facing protections, request/response shaping, and forwarding typed operations through the IPC Gateway.
-3. Core owns authoritative authentication/session validity, identity, role and capability checks, resource ownership, business rules, secrets and data access. The exact session mechanism remains open until M0.5, but the BFF must not become an independent source of authorization truth.
-4. Web never connects directly to PostgreSQL and does not contain a second implementation of domain logic.
-5. A standalone Nginx/Caddy reverse proxy is optional, not a required application component for the initial stack. It may later be added for TLS termination, static asset delivery or deployment-specific routing.
-6. Plugin UI is delivered/routed through a controlled Web path or configured separate origin, but runs in an isolated browser context with a narrow message bridge. It receives no session secrets or unrestricted Core RPC.
+1. `postflowx-web` is one container with the **frontend (React SPA)** and a **thin BFF (Fastify)**.
+2. The BFF owns: browser-facing HTTP/API routes, cookie/session *transport*, CSRF/origin protection, request validation and shaping, error mapping, and forwarding typed calls to the server **Gateway** over gRPC with mutual TLS.
+3. **Core remains authoritative** for session validity, identity, roles, capabilities, ownership, business rules, secrets and data access. The BFF is never a source of authorization truth.
+4. The web container **never connects to PostgreSQL** and contains no domain logic.
+5. **Generic, allowlisted pass-through routes** (no plugin-specific code in the BFF):
+   - `GET /api/connect/{plugin_id}/callback` — receives the provider's OAuth redirect and forwards the raw query parameters plus the user's session to Core (`accounts.complete_connect`). Core validates the single-use `state`, binds it to the session user, and calls the plugin.
+   - `GET /media/public/{token}` — unauthenticated by session, authenticated by an unguessable, expiring, signed token. The BFF forwards the token to Core (`media.resolve_public`) and streams the result. Core validates token, expiry and revocation. This is what lets providers such as Meta fetch media from a public URL.
+6. **Plugin UI is declarative.** The frontend renders forms and pages from plugin *descriptors* (restricted JSON-Schema subset, ADR-0005). All plugin-supplied strings are treated as untrusted text and are rendered escaped; no plugin-supplied HTML or JavaScript is executed in v1.
+7. **TLS/ingress.** The web container listens on plain HTTP inside the stack and is bound to `127.0.0.1` by default. For anything beyond localhost, TLS termination is required: either the optional Compose profile `tls` (Caddy, automatic certificates) or an operator-provided proxy. HTTPS is mandatory for Instagram (OAuth redirect URI and public media URLs).
+8. **Internal transport:** the BFF authenticates to the Gateway with a client certificate (mTLS). A user identity is conveyed only as an opaque session token that Core validates; the BFF never sends a trusted user ID.
 
 ## Consequences
 
-- The Web service is more than a static server, but remains deliberately thin.
-- Browser requests follow `Browser → Web BFF → IPC Gateway → Core → PostgreSQL` for protected application operations.
-- Core authorization tests remain authoritative; hiding a control in the UI is never sufficient.
-- Web and Core require compatible API contracts and versioning.
-- Cookie-authenticated mutation routes require CSRF protection, secure cookie settings and origin checks appropriate to the chosen deployment.
+- Request path for protected operations: `Browser → Web BFF → Gateway → Core → PostgreSQL`.
+- The web service is more than a static server but stays deliberately thin; hiding a UI control is never sufficient — Core re-authorizes everything.
+- Cookie-authenticated mutation routes require CSRF protection, secure cookie attributes and origin checks (details: OD-03 / M0.4).
+- The BFF must stay up to date with the contract (`proto/` in the deploy repository); contract tests run in CI (ADR-0003).
+- The public media endpoint and the OAuth callback are new attack surface and are covered in the threat model (T17, T18).
+- When Core/Gateway are unavailable the BFF serves the UI shell with a clear degraded state instead of failing blindly.
 
 ## Alternatives considered
 
-- **Static server only:** rejected as the complete Web design because session-aware routes and safe request forwarding are required. A static server/reverse proxy may still be used as an optional edge component.
-- **Full business backend in Web:** rejected because it duplicates Core, data access and authorization responsibilities.
-- **Direct browser-to-Core/Gateway calls:** rejected as the default because it exposes internal service contracts and complicates service authentication and browser security.
+- **Static server only:** cannot provide sessions, callbacks or media delivery.
+- **Browser talks to server/Gateway directly:** exposes the internal API and moves cookie/CSRF concerns into the C++ server.
+- **Plugin-specific BFF routes:** rejected; every plugin would need web-tier code. The generic callback and media routes keep plugins out of the web container.
+- **Plugin UI in sandboxed iframes:** deferred; far larger attack surface and effort than descriptors, which cover the first provider completely.

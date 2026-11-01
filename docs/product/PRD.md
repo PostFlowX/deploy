@@ -1,93 +1,108 @@
 # Product Requirements Document
 
-**Status:** Proposed baseline  
+**Status:** Proposed baseline — **revision 2** (2026-10-22)
 **Product:** PostFlowX
 
 ## 1. Product summary
 
-PostFlowX is a self-hosted social publishing platform for managing social accounts, preparing content, and publishing immediately or on a schedule. Each customer operates an installation using a central Docker Compose deployment. A web application is the primary user interface; it includes a thin Backend-for-Frontend (BFF) for browser HTTP/session concerns and forwards protected operations through the IPC Gateway to Core. Platform functionality is extended through plugins with explicit permissions and controlled access to Core services.
+PostFlowX is a self-hosted social publishing platform. One customer runs one installation from a central Docker Compose deployment (`web`, `server`, `db`). Users manage provider accounts, prepare content, and publish immediately or on a schedule through a web application. Provider integrations are **plugins**: separate executables hosted by the server, built in their own repositories against a documented contract. Credentials stay encrypted under the customer's control.
 
-## 2. Problem and goals
+## 2. Delivery in two steps
 
-The product should make social publishing easier to operate while keeping customer data and credentials under the customer's deployment control.
+| Release | Content | Success statement |
+|---|---|---|
+| **Infra v0.1** (Phase A) | Platform: stack, security model, users, plugin host, durable jobs, web UI, operations. Verified end to end with a **reference "demo publisher" plugin** | A fresh deployment can be started from the docs; an admin creates a user; the operator installs and the admin enables the demo plugin; the user connects a demo account, schedules a post, the job runs, the final state is visible; a restart loses nothing; no cross-user data exposure |
+| **Instagram v0.2** (Phase B) | `postflowx-plugin-instagram` in its own repository | An eligible Instagram account can be connected; a supported post can be published immediately or on a schedule; token expiry/revocation and platform errors are handled and visible |
+
+Infra v0.1 must not depend on Instagram, and the plugin contract is frozen (v1) before Phase B starts, so that the Instagram plugin needs no platform changes beyond bug fixes.
+
+## 3. Problem and goals
+
+Make social publishing easier to operate while keeping customer data and credentials in the customer's deployment.
 
 ### Goals
 
-1. Provide a reliable web UI for account management, content preparation, and publishing.
-2. Support multiple application users within one installation with enforced ownership and role permissions.
-3. Publish to Instagram first, including immediate and scheduled publishing.
-4. Keep access tokens and other credentials encrypted at rest.
-5. Provide a documented plugin interface for adding integrations and features without giving plugins unrestricted database access.
-6. Deploy and upgrade the complete stack predictably using Docker Compose.
-7. Recover cleanly from process restarts and interrupted jobs.
-8. Add AI-assisted text generation in a later milestone, with providers behind a replaceable interface.
+1. A reliable web UI for account management, content preparation and publishing.
+2. Several users per installation with enforced ownership and role permissions.
+3. A plugin interface that lets providers be added without touching the platform and **without giving plugins database access or key material**.
+4. Credentials encrypted at rest with key material outside the database.
+5. Durable publishing jobs that survive restarts and never blindly duplicate external posts.
+6. Predictable deployment, backup/restore and upgrade with Docker Compose.
+7. Instagram as the first provider (Phase B); AI text generation and TikTok later as additional plugins.
 
-## 3. Non-goals for the first usable release
+## 4. Non-goals
 
-- Hosted multi-tenant SaaS operated by the PostFlowX project.
-- TikTok publishing in the first release.
-- AI image/video generation or model hosting.
-- Arbitrary plugin code running inside the Core process.
-- Giving plugins direct database credentials or unrestricted SQL access.
-- A plugin marketplace with automatic trust guarantees.
-- Kubernetes, multi-host clustering, or high availability.
-- A promise that third-party social APIs will always be available or permit every requested operation.
-- A custom general-purpose process supervisor where Docker's lifecycle features suffice.
+For Infra v0.1 and Instagram v0.2:
 
-## 4. Deployment and operating model
+- Hosted multi-tenant SaaS operated by the project.
+- **Untrusted third-party plugins** (only bundled or operator-approved plugins run).
+- Plugin upload through the web UI, plugin marketplace, package signing infrastructure.
+- Plugin-supplied browser code (iframes/scripts); plugin UI is declarative.
+- AI features, TikTok and other providers (later plugins).
+- AI image/video generation; model hosting.
+- Kubernetes, multi-host clustering, high availability.
+- Analytics and reporting, approval workflows, billing.
+- Any promise that third-party platform APIs will remain available or permit every operation.
+- A Docker-controlling runtime manager (the Watchdog supervises processes inside the server container only).
 
-- One Compose project per customer installation.
-- Separate containers for Web (frontend + thin BFF), the combined Server process, PostgreSQL, and isolated plugin runtime(s) where practical. Core, IPC Gateway and Watchdog are internal modules within the `postflowx-server` process in the initial architecture.
-- Only the Web entry point is exposed to the host by default. PostgreSQL and internal services remain on private networks.
-- Persistent volumes are used for database state, media files, and required operational state.
-- Configuration and encryption keys are supplied as deployment secrets or protected files, never committed to source control.
-- The deployment repository pins compatible image versions. Production deployments must not rely on floating `latest` tags.
+## 5. Deployment and operating model
 
-## 4.1 Initial technology baseline
+- One Compose project per installation: `web` (frontend + BFF), `server` (Watchdog, Gateway, Core, plugin processes), `db` (PostgreSQL); optional `proxy` (TLS profile).
+- Only the web entry point is published to the host (default `127.0.0.1:8080`). PostgreSQL and the server are on a private internal network; the server additionally has an outbound-only network for provider API calls.
+- Persistent volumes: database, media, plugin packages (read-only in the running server).
+- Configuration is non-secret `.env`; secrets (DB password, master key, internal TLS material) are generated by `scripts/init-secrets.sh` and never committed.
+- Release = a version-pinned bundle of compatible images; production never uses floating `latest`.
+- HTTPS is required for any non-local deployment and mandatory for Instagram (OAuth redirect URI, public media URLs).
+- Technology baseline: ADR-0003.
 
-The proposed initial implementation stack is C++20 for `postflowx-server`, TypeScript + Fastify for the Web BFF, TypeScript + React + Vite for the frontend, PostgreSQL for persistence, and Docker Compose for deployment. gRPC + Protocol Buffers is the preferred typed IPC contract, subject to M0.3 validation. Detailed libraries, generated-code workflow, transport authentication and plugin isolation remain assigned to their relevant milestones. PostAPI source review is deferred until Instagram plugin implementation.
+## 6. Roles
 
-## 5. Roles
+**Installation administrator** — creates and manages users and roles; reviews, grants and revokes plugin capabilities; enables/disables plugins; sees operational health and diagnostics. Has **no implicit access** to other users' posts, media or credentials and no database superuser access.
 
-### Installation administrator
+**Registered user** — manages own provider accounts, content, jobs and plugin settings; cannot access another user's records or secrets.
 
-Can manage installation settings, users, role assignments, plugin installation/enablement, and operational status through supported product interfaces. Does not automatically receive raw database superuser access.
+**Plugin** — a process with a scoped identity and admin-granted capabilities; acts for a user only inside a Core-initiated call (call token). Requested permissions are never granted automatically.
 
-### Registered user
+**Deployment operator** — controls the host, Compose configuration, volumes, backups, secrets, plugin installation (CLI) and database recovery. Outside normal application authorization; highly privileged.
 
-Can manage their own social accounts, content, jobs, and authorized plugin instances. They cannot access another user's records or secrets unless an explicit permission grants that access.
+## 7. Scope of Infra v0.1
 
-### Plugin
+**Platform**
+- Compose stack with health checks, private networks, pinned versions, documented configuration.
+- Watchdog (PID 1) supervising Gateway, Core and plugins; crash-loop detection; aggregate health.
+- Gateway with authenticated routing, method allowlist, limits.
+- Core with database layer, migrations, audit, readiness.
 
-Receives a scoped identity and a declared set of capabilities. It can only act on behalf of an authorized user and only through documented Core APIs. A plugin's requested permissions are not granted automatically.
+**Users and security**
+- Secure initial admin creation via CLI; login/logout; server-side sessions; CSRF/origin protection.
+- Admin-created users; role-based authorization; ownership enforced on every operation.
+- Encrypted credential storage with key outside the database; secret rotation/revocation states.
 
-### Deployment operator
+**Plugins**
+- Operator CLI installation with hash pinning; plugin registry, capability review/grant, enable/disable, lifecycle and health in the admin UI.
+- Plugin SDK, **reference demo plugin**, plugin test harness.
+- Host API: storage, accounts, credentials, media, checkpoint, audit; call tokens.
 
-Controls the host, Compose configuration, persistent volumes, backups, secrets, and database recovery. This role is outside normal application authorization and must be treated as highly privileged.
+**Publishing**
+- Posts (draft + media metadata), media upload with validation, signed public media URLs.
+- Durable jobs: immediate and scheduled, timezone-aware, attempts, bounded retries, explicit terminal states, `OUTCOME_UNKNOWN` + reconcile, duplicate prevention.
 
-## 6. MVP functional scope
+**Web**
+- App shell, authentication views, admin UI (users, plugins, health), user UI (accounts, composer, jobs) rendered from plugin descriptors.
 
-- Login/logout and secure session handling.
-- Administrator-created users and role-based authorization.
-- Core service and health reporting.
-- Plugin registry and lifecycle status.
-- One reference plugin to validate the plugin contract.
-- Instagram account connection and token lifecycle where supported by Meta's current API and app permissions.
-- Content/media metadata, publishing jobs, immediate publishing, scheduled publishing, status, retries and audit trail.
-- Durable jobs that survive process restart.
-- Encrypted credential storage with key material outside the database.
-- Basic administration and operational diagnostics.
-- Backup/restore and documented upgrade path before a production release.
+**Operations**
+- Backup/restore (database + media + key handling), upgrade/rollback procedure, optional TLS profile, release bundle, troubleshooting docs.
 
-## 7. Later scope
+## 8. Scope of Instagram v0.2 (separate repository)
 
-- AI text generation through a provider interface.
-- More plugin integrations, including TikTok after API feasibility review.
-- Improved plugin distribution, package signing, update/rollback tooling, and developer SDK.
-- Optional external object storage if local persistent media storage becomes insufficient.
+OAuth account connection and token lifecycle (as far as Meta's current API and app permissions allow), publishing of supported media types (immediate and scheduled via platform jobs), media container checkpoint/reconcile, platform error mapping (token expiry, rate limits, transient vs. permanent), user-facing error explanations. Exact supported account types and media formats are fixed by the feasibility check (OD-10).
 
-## 8. Product success criteria
+## 9. Later scope
 
-The first usable release is successful when a fresh deployment can be started from documented instructions, an administrator can create a user, the user can connect an eligible Instagram account, publish a supported post immediately or on a schedule, inspect the final job state, and restart the stack without losing jobs or exposing another user's data.
+AI text generation (plugin kind `ai_text`), TikTok after API feasibility, further integrations, UI-based plugin upload with package signing/provenance, container-isolated plugins for untrusted code, iframe-based plugin UI, optional S3-compatible media storage, SDKs for further languages.
 
-The release is not considered production-ready until security, backup/restore, upgrade, and failure-recovery acceptance tests pass.
+## 10. Success criteria
+
+**Infra v0.1** is successful when, on the reference Linux host, a fresh deployment started from the documentation lets an administrator create a user, the operator install the demo plugin, the user connect a demo account and schedule a post, the job reach its final state, and a full stack restart — including a restart during a running attempt — lose no job and duplicate no publication; and a second user cannot access the first user's data by any tested path. It is not "production-ready" until the security, backup/restore, upgrade and failure-injection acceptance tests (M13) pass.
+
+**Instagram v0.2** is successful when the same flow works against Meta's API in a test environment with a real eligible account, including token expiry/revocation and failure paths, without the plugin ever exposing credentials to the UI or logs.

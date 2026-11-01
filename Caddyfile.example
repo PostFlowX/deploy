@@ -1,0 +1,6 @@
+# Optional TLS reverse proxy (docker compose --profile tls up -d)
+# Set POSTFLOWX_DOMAIN in .env. Caddy obtains and renews certificates automatically.
+{$POSTFLOWX_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:8080
+}

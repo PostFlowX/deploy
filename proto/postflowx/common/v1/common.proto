@@ -1,0 +1,11 @@
+// DRAFT — mirrors the sketch in docs/protocol/IPC_PROTOCOL.md; finalized in milestone M0.3.
+// From M0.3 on this directory is the single source of truth (see proto/README.md).
+
+syntax = "proto3";
+package postflowx.common.v1;
+
+// Passed by Core to a plugin and returned by the plugin on every user-scoped Host API call.
+message CallContext {
+  string call_token = 1;  // opaque, short-lived, bound to (plugin, user, purpose, scope)
+  string request_id = 2;  // caller-generated, unique per attempt
+}

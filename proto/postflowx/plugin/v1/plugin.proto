@@ -1,0 +1,143 @@
+// DRAFT — mirrors the sketch in docs/protocol/IPC_PROTOCOL.md; finalized in milestone M0.3.
+// From M0.3 on this directory is the single source of truth (see proto/README.md).
+
+syntax = "proto3";
+package postflowx.plugin.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "postflowx/common/v1/common.proto";
+
+service PluginService {
+  rpc Describe(DescribeRequest) returns (PluginDescriptor);
+  rpc BeginConnect(BeginConnectRequest) returns (BeginConnectResponse);
+  rpc HandleCallback(HandleCallbackRequest) returns (HandleCallbackResponse);
+  rpc ValidatePost(ValidatePostRequest) returns (ValidatePostResponse);
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc Reconcile(ReconcileRequest) returns (ReconcileResponse);
+  rpc RunTask(RunTaskRequest) returns (RunTaskResponse);
+}
+
+message DescribeRequest {}
+
+enum ConnectFlow {
+  CONNECT_FLOW_UNSPECIFIED = 0;
+  CONNECT_FLOW_OAUTH2_REDIRECT = 1;
+  CONNECT_FLOW_FORM = 2;
+  CONNECT_FLOW_NONE = 3;
+}
+
+message MediaRules {
+  repeated string allowed_mime_types = 1;
+  int32 max_items = 2;
+  int64 max_bytes_per_item = 3;
+}
+
+message PluginDescriptor {
+  string plugin_id = 1;
+  string version = 2;
+  string api_version = 3;                        // e.g. "1.0"
+  string display_name = 4;
+  bytes icon_svg = 5;                            // size-limited, sanitized by Core
+  ConnectFlow connect_flow = 6;
+  google.protobuf.Struct settings_schema = 7;    // restricted JSON-Schema subset
+  google.protobuf.Struct post_options_schema = 8;
+  MediaRules media_rules = 9;
+  int32 caption_max_length = 10;
+}
+
+message BeginConnectRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string state = 2;         // generated and validated by Core
+  string redirect_uri = 3;  // the BFF's generic callback URL
+}
+message BeginConnectResponse { string authorization_url = 1; }
+
+message HandleCallbackRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  map<string, string> query = 2;  // provider callback parameters (untrusted)
+}
+message HandleCallbackResponse {
+  string account_id = 1;
+  string display_name = 2;
+}
+
+message MediaRef {
+  string media_id = 1;
+  string mime_type = 2;
+  int64 size_bytes = 3;
+}
+message PostPayload {
+  string caption = 1;
+  repeated MediaRef media = 2;
+  google.protobuf.Struct options = 3;  // validated against post_options_schema
+}
+
+message FieldIssue {
+  string field = 1;
+  string code = 2;
+  string message = 3;  // safe for display
+}
+message ValidatePostRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string account_id = 2;
+  PostPayload post = 3;
+}
+message ValidatePostResponse { repeated FieldIssue issues = 1; }
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  OUTCOME_PUBLISHED = 1;
+  OUTCOME_RETRYABLE_FAILURE = 2;
+  OUTCOME_RATE_LIMITED = 3;
+  OUTCOME_AUTH_FAILURE = 4;
+  OUTCOME_PERMANENT_FAILURE = 5;
+  OUTCOME_UNKNOWN = 6;
+}
+message PublishRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string job_id = 2;
+  string attempt_id = 3;
+  string idempotency_key = 4;
+  string account_id = 5;
+  PostPayload post = 6;
+  bytes checkpoint = 7;  // opaque data the plugin stored via CheckpointAttempt in an earlier attempt
+}
+message PublishResponse {
+  Outcome outcome = 1;
+  string external_id = 2;
+  string external_url = 3;
+  string error_code = 4;     // stable, plugin-defined
+  string error_message = 5;  // safe, user-presentable
+  google.protobuf.Duration retry_after = 6;
+}
+
+enum ReconcileResult {
+  RECONCILE_RESULT_UNSPECIFIED = 0;
+  RECONCILE_RESULT_PUBLISHED = 1;
+  RECONCILE_RESULT_NOT_PUBLISHED = 2;
+  RECONCILE_RESULT_UNDECIDABLE = 3;
+}
+message ReconcileRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string job_id = 2;
+  string attempt_id = 3;
+  string account_id = 4;
+  PostPayload post = 5;
+  bytes checkpoint = 6;
+}
+message ReconcileResponse {
+  ReconcileResult result = 1;
+  string external_id = 2;
+  string external_url = 3;
+}
+
+message RunTaskRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string task_name = 2;
+  string account_id = 3;
+}
+message RunTaskResponse {
+  bool ok = 1;
+  string message = 2;
+}

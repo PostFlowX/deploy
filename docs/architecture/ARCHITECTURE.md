@@ -1,144 +1,206 @@
 # Architecture Overview
 
-**Status:** Proposed baseline. This document deliberately distinguishes logical responsibilities from process/container boundaries.
+**Status:** Proposed baseline — **revision 2** (2026-10-22). Authoritative decisions live in `docs/decisions/` (ADR-0001 … ADR-0005); this document describes the resulting structure.
 
 ## 1. Deployment topology
 
-One customer installation is one Docker Compose project. The intended initial container/process boundaries are:
+One customer installation = one Docker Compose project with three application containers (plus an optional TLS proxy).
 
-1. **Web (`postflowx-web`)** — a separate container for frontend delivery and the thin browser-facing BFF. It handles HTTP routes, cookie/session transport, browser protections and typed request forwarding. It must not access PostgreSQL directly or own business authorization.
-2. **Server (`postflowx-server`)** — a separate container running one primary server process. The **Core**, **IPC Gateway**, and **Watchdog** are internal modules in this process, not separate containers or operating-system processes in the initial architecture.
-3. **PostgreSQL** — a private database container with persistent storage. Only the server's approved data-access layer receives application database credentials; explicitly authorized operational backup/restore paths are documented separately.
-4. **Plugin runtime(s)** — plugin backend code runs outside the server process in an isolated execution environment, preferably in dedicated containers with reduced privileges and bounded resources. The exact provisioning and container granularity are finalized in the plugin-runtime milestones.
+```text
+                        Internet / LAN
+                              │ HTTPS (via optional proxy) / HTTP on localhost
+                              ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │ web container     React SPA + Fastify BFF                (network: public, backend)
+ └───────────────┬──────────────────────────────────────────────────────────┘
+                 │ gRPC over TCP, mutual TLS                (network: backend, internal)
+ ┌───────────────▼────────────────────────── server container ──────────────┐
+ │  Watchdog (PID 1, supervisor + health)                                    │
+ │      │ spawns / supervises / restarts / re-homes secrets                  │
+ │      ├──► Gateway ◄──UDS──► Core ───────── TCP, SCRAM ──► ┌───────────┐   │
+ │      │       ▲  ▲                                          │ db        │   │
+ │      │       │  └── per-plugin UDS pair ──► Plugin A       │ PostgreSQL│   │
+ │      │       └───── per-plugin UDS pair ──► Plugin B       └───────────┘   │
+ │      └──► Plugin processes (own UID each)                  (network: backend)│
+ │                              │ outbound only (network: egress)            │
+ └──────────────────────────────┼────────────────────────────────────────────┘
+                                ▼
+                     Provider APIs (e.g. Meta Graph API)
+```
 
-Docker Compose/container runtime configuration owns container startup, shutdown and restart policies. The Watchdog observes and reports health but does not receive unrestricted Docker control. A future Runtime Controller for dynamic plugin provisioning is not part of the initial privileged surface; it requires a separate narrow interface and threat model.
+| Container | Contents | Networks | Published to host |
+|---|---|---|---|
+| `web` | Frontend + thin BFF | `public`, `backend` | yes (default `127.0.0.1:8080`) |
+| `server` | Watchdog, Gateway, Core, plugin processes | `backend`, `egress` | no |
+| `db` | PostgreSQL | `backend` | no |
+| `proxy` *(optional, profile `tls`)* | Caddy TLS termination | `public` | 80/443 |
 
-### Initial technology baseline
+`backend` is an `internal` Docker network (no internet). `egress` is attached to `server` only, because plugins must call provider APIs. Docker Compose owns container lifecycle (start, stop, restart policy). Nothing in the stack receives the Docker socket.
 
-- Server: C++20.
-- Web BFF: TypeScript + Fastify.
-- Frontend: TypeScript + React + Vite.
-- Preferred typed internal RPC contract: gRPC + Protocol Buffers, pending validation in M0.3.
-- Database: PostgreSQL.
-- Deployment: Docker Compose.
+### Technology baseline
 
-The PostgreSQL client library, build/dependency tooling, transport authentication and detailed plugin isolation mechanism remain open implementation decisions for their assigned milestones. PostAPI source review is deferred until Instagram plugin implementation.
+C++20 server (validation gate in M0.2), TypeScript + Fastify BFF, TypeScript + React + Vite frontend, PostgreSQL, gRPC + Protocol Buffers, Docker Compose. Details and gate: ADR-0003.
 
-## 2. Trust boundaries
+## 2. Processes in the server container
 
-- Browser ↔ Web BFF: untrusted client; validate all input server-side, apply browser-facing protections (including CSRF protection for cookie-authenticated mutations), and never treat client-supplied identity as authoritative.
-- Web BFF ↔ IPC Gateway ↔ Core: authenticated internal service calls. The BFF carries the verified session context using the agreed internal contract; Core validates the context and makes the final authorization decision. Never trust user identity supplied only in a request body.
-- Plugin UI ↔ main application: separate execution context; strict message allowlist.
-- Plugin backend ↔ IPC Gateway/Core: plugin identity plus scoped user context and capability checks.
-- Core ↔ PostgreSQL: privileged data access; parameterized queries, fixed/validated identifiers, least-privileged database roles.
-- Deployment operator ↔ host/Compose/secrets: high-trust operational boundary.
+| Process | UID (proposal) | Holds secrets? | DB access | Listens on | Talks to |
+|---|---|---|---|---|---|
+| Watchdog | root, minimal caps | reads all secret files, distributes them | no | `watchdog.sock` (Core only) | spawns all children; polls their health services |
+| Gateway | 10010 | TLS server key + CA only | no | TCP `:50051` (mTLS, web only); core-outbound socket; one *host socket* per plugin | Core socket; each plugin's own socket |
+| Core | 10020 | DB password, master key | **yes (only client)** | `core.sock` (Gateway UID only) | PostgreSQL; Watchdog control socket; Gateway (for calls to plugins) |
+| Plugin *n* | `20000+` | none (leases credentials per call) | **no** | `plugin.sock` in its private dir | Gateway host socket (`host.sock`) |
 
-## 3. Responsibilities
+Socket layout under `/run/postflowx/` (tmpfs, created by the Watchdog):
 
-### Web (frontend + thin Backend-for-Frontend)
+```text
+/run/postflowx/
+  core.sock                      Core's server; only Gateway UID may connect
+  gateway-core.sock              Gateway's server for Core→plugin calls; only Core UID
+  watchdog.sock                  Watchdog control API; only Core UID (+ healthcheck as root)
+  health/<name>.sock             gRPC health service of every process; status only, connectable
+                                 by the Watchdog (so health observation does not depend on the Gateway)
+  plugins/<plugin_id>/host.sock  Gateway's per-plugin server (plugin → Core API)
+  plugins/<plugin_id>/plugin.sock Plugin's server (Core → plugin API, via Gateway)
+  secrets/<process>/...          re-homed secrets, 0400, owner = that process UID
+```
 
-- Serve the frontend, browser-facing routes and a small set of typed HTTP/API endpoints used by the UI.
-- Handle cookie parsing, session transport and browser-facing protections; Core remains authoritative for session validity, identity, roles, ownership and authorization. The precise cookie/session mechanism is an open decision.
-- Forward application operations through the IPC Gateway; do not duplicate domain/business logic or make final permission decisions.
-- Normalize browser-facing errors and response shapes without leaking internal details.
-- Never store platform access tokens or long-lived bearer tokens in browser local storage or URLs.
-- Never connect to PostgreSQL.
-- Render plugin navigation from authorized registry metadata.
-- Load plugin UI in a restricted frame/origin; expose only a documented, narrow message bridge.
+Directory permissions allow exactly one plugin UID plus the Gateway UID into `plugins/<plugin_id>/`. Details and validation: ADR-0004, M0.2, M3, M4.
 
-### Core
+## 3. Communication paths and identity
 
-- Single source of truth for business authorization and ownership.
-- Own user/session records, plugin registry, publishing jobs, audit events and media metadata.
-- Validate all plugin requests against manifest capabilities and current user grants.
-- Broker data access and secrets; never expose DB credentials to plugins.
-- Own scheduling, retry decisions and job state transitions.
-- Apply versioned database migrations.
-- Emit health/readiness and structured diagnostic information.
+| From → To | Transport | How the caller is identified |
+|---|---|---|
+| Browser → Web BFF | HTTP(S) | Session cookie (BFF validates transport; Core validates session) |
+| Web BFF → Gateway | gRPC / TCP / mTLS | Client certificate (`CN=postflowx-web`) |
+| Gateway → Core | gRPC / UDS | Socket access restricted to Gateway UID; Gateway sets `x-pfx-caller-kind/id` |
+| Core → Gateway → Plugin | gRPC / UDS | Core UID-only socket; Gateway routes to the target plugin's socket |
+| Plugin → Gateway → Core | gRPC / UDS | Per-plugin socket directory (+ peer credentials if available); Gateway assigns `plugin:<id>`; user context only via **call token** |
+| Core → PostgreSQL | libpq / TCP | SCRAM-SHA-256, password only Core has |
+| Core ↔ Watchdog | gRPC / UDS | Socket accessible to Core UID only |
+| Plugin → provider API | HTTPS via `egress` | Provider credentials leased from Core |
 
-### IPC Gateway
+### Forbidden paths
 
-- Provide a versioned internal protocol and route messages to allowed services.
-- Authenticate service identities; reject unknown identities, invalid envelopes and unsupported protocol versions.
-- Apply request-size limits, deadlines, rate/concurrency limits and correlation IDs.
-- Do not grant permissions based solely on a message's claimed plugin/user ID.
-- Do not expose internal routes publicly.
+- Browser → Gateway/Core directly; Web BFF → PostgreSQL; Web BFF → plugin directly.
+- Plugin → PostgreSQL, Docker socket, Core's files, another plugin's socket.
+- Plugin → Core other than via the Gateway host socket and the documented Host API.
+- Watchdog → Docker API; any container → Docker socket.
+- Anything except `web` published to the host by default.
+- A client-supplied user ID or plugin ID being treated as identity.
+
+Request validation is not authorization: **Core** checks actor, capability, ownership and state for every protected operation.
+
+## 4. Responsibilities
+
+### Web (frontend + thin BFF)
+
+Serves the SPA; browser-facing routes; cookie/session transport; CSRF/origin protection; request validation; error mapping; typed forwarding to the Gateway; generic OAuth-callback and public-media routes (ADR-0002); renders plugin descriptors as forms (untrusted strings escaped). No DB access, no domain logic, no authoritative authorization, no token storage in the browser.
+
+### Gateway
+
+Terminates mTLS from web; owns all plugin host sockets; assigns caller identity; enforces a **method allowlist per caller kind**, message-size limits, deadlines (bounded by policy), rate/concurrency limits and correlation IDs; strips client-supplied `x-pfx-*` metadata; routes Core→plugin calls. **Does not** decide business authorization, hold secrets or touch the database. It is part of the trusted computing base (T13) and is kept deliberately small.
+
+### Core (one process, internal modules)
+
+| Module | Responsibility |
+|---|---|
+| Auth & Sessions | users, password hashing, sessions, bootstrap admin |
+| Authorization | roles, capability grants, ownership checks — single source of truth |
+| Plugin Registry | manifests, versions, lifecycle state machine, grants, desired-state → Watchdog |
+| Host API | storage, accounts, credentials, media, checkpoints, audit for plugins; call-token issuance/validation |
+| Job Manager | scheduling, claim/lease, attempts, retries, outcome handling, reconcile |
+| Secret Broker | encryption/decryption, key IDs, lease auditing |
+| Media | upload validation, storage interface, signed public URLs |
+| Data Access | prepared statements, migrations, role-separated connections |
+| Audit & Health | audit events, structured logs, readiness |
 
 ### Watchdog
 
-- Run as an internal module in the server process and use explicit interfaces to observe internal module state and authorized dependency health.
-- Track `STARTING`, `HEALTHY`, `DEGRADED`, `UNRESPONSIVE`, `STOPPED` and `UNKNOWN` where the monitored target can report those states.
-- Distinguish a failed dependency/health-check path from a failed server process. The Watchdog cannot continue observing the server after the entire process terminates; Docker/operator monitoring owns that boundary.
-- Track last success, consecutive failures, startup duration and failure history.
-- Report health to the admin interface through a read-only, authenticated interface.
-- Do not restart arbitrary containers directly in v1. Docker restart policies are the initial lifecycle owner; application-level recovery is handled by the responsible service. This avoids giving a monitoring service host-level control.
-- An internal Watchdog failure must not mark every monitored service unhealthy; server-process health remains visible to Docker/operator monitoring.
+PID 1 duties (reap zombies, forward signals, ordered shutdown); start order and restart policy with backoff and crash-loop detection; privilege drop and rlimits per child; secret re-homing; hash-verified plugin start/stop via its control API; health observation of every child through the standard gRPC health protocol; aggregate health for the Docker healthcheck and a read-only status API for the admin UI. No network listener, no Docker access, no business logic. States: `STARTING`, `HEALTHY`, `DEGRADED`, `UNRESPONSIVE`, `CRASH_LOOP`, `STOPPED`, `UNKNOWN`.
 
 ### PostgreSQL
 
-- Persist application state, job state and metadata.
-- Be reachable only from the Core and explicitly authorized migration/backup paths.
-- Use explicit roles and grants; revoke unnecessary `CREATE` rights in `public`; use safe schema qualification and a reviewed `search_path`.
-- Never treat schema names as authorization by themselves. PostgreSQL documents that schemas are not rigidly separated unless privileges are configured correctly; use explicit grants and a reviewed `search_path` (see [PostgreSQL schema documentation](https://www.postgresql.org/docs/18/ddl-schemas.html)).
+Persists application state. Reachable only on `backend`; the application role has DML only, a separate migration role has DDL; `CREATE` on `public` revoked; fixed `search_path`; one schema (`core`).
 
-### Plugin runtime
+### Plugin
 
-- Runs outside Core and receives only the capabilities it needs.
-- Has no database credentials, Docker socket, host filesystem mounts or ambient administrative token.
-- Uses a dedicated service identity; a user-scoped request includes an authenticated actor/context established by Core, not one trusted solely from plugin input.
-- Has bounded CPU/memory, timeouts, restricted filesystem, dropped capabilities and controlled network access where feasible.
-- Is considered untrusted unless explicitly installed and trusted by the deployment operator. Isolation reduces risk; it does not guarantee perfect containment.
+Native executable with manifest. Implements the `PluginService` (describe, connect, callback, validate, publish, reconcile, tasks); uses the Host API. Untrusted *by default in design* but **trusted by policy** in v1 (bundled/operator-approved only). Details: PLUGIN_SPEC.
 
-## 4. Communication flow
+## 5. Key flows
 
-### Browser request
+### 5.1 Browser request
 
-1. Browser sends a request to the Web BFF.
-2. The BFF applies browser-facing validation and protections, then forwards a typed request through the Gateway with session context established by the agreed authentication flow.
-3. Core validates that context, derives the actor, checks authorization/ownership, executes the operation and returns a typed result.
-4. Gateway routes the response; the BFF maps it to a safe browser-facing response.
+1. Browser → BFF (cookie). BFF validates input, CSRF/origin; forwards a typed call with the opaque session token to the Gateway (mTLS).
+2. Gateway authenticates the BFF, checks the method allowlist/limits, forwards to Core with caller metadata.
+3. Core validates session → derives actor → authorizes → executes → returns a typed result.
+4. BFF maps the result to a safe browser response.
 
-### Plugin request
+### 5.2 Connect a provider account (OAuth)
 
-1. Plugin backend authenticates with its own service identity.
-2. It requests a capability-defined operation through the Gateway.
-3. Core verifies plugin identity, installed version, grant, user scope, resource ownership and input schema.
-4. Core performs the operation and returns only the minimum necessary result.
-5. The plugin cannot bypass Core by querying PostgreSQL.
+1. User chooses a plugin → BFF → Core `accounts.begin_connect`. Core creates a single-use `state` (bound to user/session, short TTL) and issues a call token, then calls plugin `BeginConnect` via the Gateway.
+2. Plugin returns the provider authorization URL (containing `state`); BFF redirects the browser.
+3. Provider redirects to `/api/connect/{plugin_id}/callback?...` on the public web URL.
+4. BFF forwards the raw parameters + session to Core `accounts.complete_connect`. Core validates and consumes `state`, binds to the session user, issues a call token, calls plugin `HandleCallback`.
+5. Plugin exchanges the code with the provider, then calls Host API `UpsertAccount` and `StoreCredential` (+ optional storage). Core encrypts and stores, audits the result.
 
-### Scheduled publication
+### 5.3 Create and publish (immediate or scheduled)
 
-1. Core creates a durable job and stores its state.
-2. The Core job manager claims due jobs with concurrency limits and a lease/claim mechanism.
-3. The integration plugin performs the external API operation.
-4. The result is recorded with an attempt ID and external platform identifiers when available.
-5. On ambiguous outcomes, Core marks the job `OUTCOME_UNKNOWN` for reconciliation rather than blindly retrying and risking duplicate publication.
+1. User composes a post in the frontend (caption, media, account, provider options from the descriptor schema, optional schedule + IANA time zone). Media upload goes BFF → Core (validated, stored on the media volume).
+2. Core validates against the descriptor schema and calls plugin `ValidatePost`; creates the post and a **job** (`SCHEDULED`, `run_at` in UTC).
+3. Job Manager claims due jobs (`FOR UPDATE SKIP LOCKED`, lease, concurrency limit), inserts an **attempt** (`CLAIMED`), mints a job-scoped call token, marks the attempt `DISPATCHED` **before** calling the plugin, then calls `Publish` through the Gateway with a deadline.
+4. Plugin leases the credential, obtains media (stream or signed public URL), calls the provider, may `CheckpointAttempt` before irreversible steps, returns an outcome class.
+5. Core records the outcome, maps it to a job state, schedules a retry with backoff for retryable outcomes, and writes the audit trail.
+6. Timeout/crash **after dispatch** → `OUTCOME_UNKNOWN` → Core calls `Reconcile` (with checkpoint) when the plugin is available; only `NOT_PUBLISHED` allows an automatic retry, `UNDECIDABLE` waits for the user.
+7. After a Core restart: leases that expired while `CLAIMED` (never dispatched) are safely retried; leases expired while `DISPATCHED` become `OUTCOME_UNKNOWN`.
 
-## 5. Database organization
+### 5.4 Plugin lifecycle
 
-- Core-owned tables: users, sessions, roles/grants, plugin registry, plugin installations/instances, jobs, job attempts, media metadata, audit events and migration state.
-- Use one schema per installed plugin (or plugin installation), with per-user ownership represented in records where needed. Core validates the owner scope on every operation. Do not create one schema per user/plugin pair in v1: it multiplies migration state and operational complexity without creating a security boundary when Core owns the database connection.
-- Core maps immutable internal IDs to schema identifiers. Never interpolate unchecked plugin/user names into SQL identifiers.
-- Plugin code cannot submit arbitrary SQL. Plugin data access uses typed storage operations and a controlled migration mechanism.
-- Migrations are versioned, reviewed, transactional where supported, and have explicit rollback/forward-recovery policy.
-- Admin UI access is application-level; raw database superuser credentials are not part of the product.
+`DISCOVERED → VALIDATING → INSTALLED → ENABLED(starting) → READY`. The operator CLI performs install/validate/pin (volume is read-only for the running server). In the UI the admin reviews requested capabilities, grants them and enables the plugin; Core records desired state and calls the Watchdog `StartPlugin`; the plugin becomes `READY` after a successful health check **and** `Describe` with a compatible API version. Failure states and details: PLUGIN_SPEC.
 
-## 6. Media storage
+## 6. Data organization
 
-MVP uses a persistent local volume behind a `MediaStorage` interface. PostgreSQL stores metadata and references, not large binary media payloads. Uploads use generated object IDs, strict size/type checks, temporary staging, safe file permissions and cleanup rules. The interface leaves room for S3-compatible storage later without making it a launch blocker.
+One PostgreSQL schema `core`, owned by Core:
 
-## 7. Process boundaries and scope control
+| Table | Purpose |
+|---|---|
+| `users`, `sessions`, `user_roles` | identity, hashed sessions, roles (`admin`, `user`) |
+| `plugins`, `plugin_versions`, `plugin_grants` | registry, installed versions (hash-pinned), granted capabilities, lifecycle state |
+| `social_accounts` | provider account per user (provider = plugin ID), status |
+| `credentials` | encrypted credential payload, `key_id`, `expires_at`, state |
+| `media` | media metadata (object ID, MIME, size, hash, owner); bytes on the media volume |
+| `posts` | draft/content: caption, media refs, target account, provider options (JSONB) |
+| `publishing_jobs`, `job_attempts` | state machine, schedule (`run_at` UTC + IANA zone), lease, attempts, checkpoint, external IDs |
+| `plugin_data` | plugin key/value storage (ADR-0005) |
+| `connect_states`, `call_tokens`, `public_media_tokens` | short-lived single-purpose tokens (stored hashed) |
+| `audit_events` | actor, action, target, outcome, timestamp |
+| `schema_migrations` | applied migrations with checksums |
 
-Separate containers are used for Web, the combined Server process, PostgreSQL and isolated plugin runtime(s). Core, Gateway and Watchdog are modules within the server process in the initial architecture. Job Manager, Secret Broker, Plugin Registry, Authorization and Data Access are modules inside Core in v1.
+Rules: every entity has a stable internal ID; timestamps in UTC; essential invariants enforced by constraints; prepared statements only; no SQL identifiers built from external input (there are no dynamic schemas). Admins have **no implicit access** to other users' posts, media or credentials; administration is application-level and the database superuser is an operator break-glass path.
 
-The Gateway is an internal module in the server process, but its interface remains a logical contract. Web/plugin clients need bounded timeouts and clear failure responses. The Watchdog observes internal module health through explicit interfaces and must not be treated as an independent process monitor. Health reporting must distinguish Core/Gateway module failures where possible, rather than inferring all health solely from one end-to-end Gateway request. The Web BFF remains thin and owns browser/HTTP concerns, not domain logic or authoritative authorization.
+## 7. Media storage
 
-## 8. Startup and shutdown
+MVP: local persistent volume behind a `MediaStorage` interface, owned by the Core UID (mode `0700`); PostgreSQL stores metadata only. Uploads use generated object IDs, size/type validation (magic-byte check, not only extension), temporary staging with cleanup. Providers that fetch by URL use **signed public URLs** served by the BFF route `/media/public/{token}` (token validated by Core, expiring, revocable). S3-compatible storage is a later implementation of the same interface.
 
-- Compose starts PostgreSQL and waits for database readiness.
-- Core waits for database readiness and completes migrations before the server reports application readiness.
-- The Gateway module becomes ready only when its routing configuration and service handlers are valid.
-- Web becomes ready when it can serve the UI and its BFF endpoints; it may show a clear degraded service screen if Gateway/Core is unavailable. Readiness should distinguish “can serve UI” from “application operations are available.”
-- Plugin runtimes report startup readiness and declared plugin/API compatibility.
-- Watchdog marks dependencies as `UNKNOWN` until it has a successful observation; missing observations are not proof that every service is dead.
-- Shutdown stops accepting new publishing work, persists/updates job claims, allows bounded in-flight completion, then exits.
+## 8. Startup, health and shutdown
+
+- Compose starts `db` and waits for its health check; `server` starts the Watchdog → Core (migrations, readiness) → Gateway → plugins; `web` starts independently and shows a degraded screen while the server is unavailable.
+- **Readiness levels:** process alive; ready to accept work; dependencies healthy; application degraded. `web` distinguishes "can serve UI" from "application operations available".
+- **Docker healthcheck of `server`** = Watchdog aggregate (Core + Gateway ready). Plugin failures → *degraded* (visible in the admin UI), not *unhealthy*.
+- Missing observations are `UNKNOWN`, never proof of failure; one failed observation path must not mark everything failed.
+- **Shutdown:** stop claiming jobs → drain in-flight attempts (bounded) → stop plugins → stop Gateway → stop Core → exit.
+
+## 9. Filesystem and volumes
+
+| Path / volume | Owner / mode | Access |
+|---|---|---|
+| `pgdata` | postgres | `db` only |
+| `media` → `/var/lib/postflowx/media` | Core UID, `0700` | Core only |
+| `plugins` → `/var/lib/postflowx/plugins` | root-written by the install CLI, **read-only** in `server` | Watchdog (exec), plugins (read own files) |
+| `/run/postflowx` (tmpfs) | per-path, see §2 | sockets, re-homed secrets |
+| `/tmp`, per-plugin tmp (tmpfs) | `0700` per UID | bounded size |
+| root filesystem of `server`/`web` | read-only | — |
+
+## 10. Scope control
+
+- Add a boundary only for a trust, deployment or failure-isolation need.
+- Out of scope for Infra v0.1: untrusted third-party plugins, UI upload of plugins, plugin marketplace, iframe plugin UIs, S3 storage, HA/clustering, multi-tenant SaaS hosting.

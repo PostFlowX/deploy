@@ -1,0 +1,145 @@
+// DRAFT — mirrors the sketch in docs/protocol/IPC_PROTOCOL.md; finalized in milestone M0.3.
+// From M0.3 on this directory is the single source of truth (see proto/README.md).
+
+syntax = "proto3";
+package postflowx.host.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "postflowx/common/v1/common.proto";
+
+service HostService {
+  rpc StorageGet(StorageGetRequest) returns (StorageGetResponse);
+  rpc StoragePut(StoragePutRequest) returns (StoragePutResponse);
+  rpc StorageDelete(StorageDeleteRequest) returns (StorageDeleteResponse);
+  rpc StorageList(StorageListRequest) returns (StorageListResponse);
+
+  rpc UpsertAccount(UpsertAccountRequest) returns (UpsertAccountResponse);
+  rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse);
+  rpc SetAccountStatus(SetAccountStatusRequest) returns (SetAccountStatusResponse);
+
+  rpc StoreCredential(StoreCredentialRequest) returns (StoreCredentialResponse);
+  rpc LeaseCredential(LeaseCredentialRequest) returns (LeaseCredentialResponse);
+
+  rpc OpenMedia(OpenMediaRequest) returns (stream MediaChunk);
+  rpc CreatePublicMediaUrl(CreatePublicMediaUrlRequest) returns (CreatePublicMediaUrlResponse);
+
+  rpc CheckpointAttempt(CheckpointAttemptRequest) returns (CheckpointAttemptResponse);
+  rpc AppendAudit(AppendAuditRequest) returns (AppendAuditResponse);
+}
+
+enum StorageScope {
+  STORAGE_SCOPE_UNSPECIFIED = 0;
+  STORAGE_SCOPE_USER = 1;    // owner = call-token user (set by Core, never by the plugin)
+  STORAGE_SCOPE_PLUGIN = 2;  // plugin-global
+}
+
+message StorageGetRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  StorageScope scope = 2;
+  string collection = 3;
+  string key = 4;
+}
+message StorageGetResponse {
+  bool found = 1;
+  google.protobuf.Value value = 2;
+  int64 version = 3;
+}
+message StoragePutRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  StorageScope scope = 2;
+  string collection = 3;
+  string key = 4;
+  google.protobuf.Value value = 5;
+  int64 expected_version = 6;  // 0 = must not exist; -1 = unconditional
+}
+message StoragePutResponse { int64 version = 1; }
+message StorageDeleteRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  StorageScope scope = 2;
+  string collection = 3;
+  string key = 4;
+}
+message StorageDeleteResponse { bool deleted = 1; }
+message StorageListRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  StorageScope scope = 2;
+  string collection = 3;
+  string prefix = 4;
+  int32 limit = 5;
+  string page_token = 6;
+}
+message StorageListEntry {
+  string key = 1;
+  google.protobuf.Value value = 2;
+  int64 version = 3;
+}
+message StorageListResponse {
+  repeated StorageListEntry entries = 1;
+  string next_page_token = 2;
+}
+
+message UpsertAccountRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string external_id = 2;
+  string display_name = 3;
+  google.protobuf.Struct public_metadata = 4;  // non-secret
+}
+message UpsertAccountResponse { string account_id = 1; }
+message DeleteAccountRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string account_id = 2;
+}
+message DeleteAccountResponse {}
+message SetAccountStatusRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string account_id = 2;
+  string status = 3;  // ACTIVE | REAUTH_REQUIRED | ERROR
+  string reason = 4;
+}
+message SetAccountStatusResponse {}
+
+message StoreCredentialRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string account_id = 2;
+  bytes payload = 3;  // encrypted by Core before persistence
+  google.protobuf.Timestamp expires_at = 4;
+}
+message StoreCredentialResponse {}
+message LeaseCredentialRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string account_id = 2;
+  string purpose = 3;  // audited
+}
+message LeaseCredentialResponse {
+  bytes payload = 1;  // plaintext; memory-only, never log or persist
+  google.protobuf.Timestamp lease_expires_at = 2;
+}
+
+message OpenMediaRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string media_id = 2;
+}
+message MediaChunk { bytes data = 1; }
+message CreatePublicMediaUrlRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string media_id = 2;
+  int32 ttl_seconds = 3;  // capped by Core policy
+}
+message CreatePublicMediaUrlResponse {
+  string url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message CheckpointAttemptRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  bytes checkpoint = 2;  // opaque, size-limited
+}
+message CheckpointAttemptResponse {}
+
+message AppendAuditRequest {
+  postflowx.common.v1.CallContext ctx = 1;
+  string event_type = 2;  // plugin-namespaced by Core
+  google.protobuf.Struct details = 3;  // no secrets
+}
+message AppendAuditResponse {}

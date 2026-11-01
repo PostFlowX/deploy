@@ -1,1 +1,7 @@
+# Local configuration and secrets — never commit
+.env
+secrets/*
+!secrets/.gitkeep
+
+# Local, superseded planning documents
 docs_old/
