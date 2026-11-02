@@ -11,6 +11,7 @@ Sizes: **S** ≤ 3 days · **M** 1–2 weeks · **L** 3–4 weeks (solo, part-ti
 3. **Checkpoints (C1–C7) replace separate spikes.** They are quick checks *inside* the real build. Each has a fail rule — if it fails, apply the fallback, write one line into `DECISIONS.md` ("Verified"), move on. Risky things come first (Steps 1–3) so problems show up early.
 4. `main` stays runnable. Tests ship with the feature. Anything not in the current step goes to "Later".
 5. Change of a boundary, trust rule or the plugin contract → one dated entry in `DECISIONS.md` (3 lines: what, why, revisit-if).
+6. 2 means done, 1 means WIP, [] means not started yet.
 
 ## Overview
 
@@ -27,8 +28,8 @@ Phase B: P0 Instagram research+repo → P1 connect → P2 publish → P3 schedul
 
 ### Step 0 — Setup · S
 
-- [ ] Commit your current repo state (the long docs stay in git history), then add this lean set.
-- [ ] Create repos `postflowx-server` (watchdog, gateway, core, **sdk/**, **plugins/demo/**) and `postflowx-web`. README + `.gitignore` each.
+- [2] Commit your current repo state (the long docs stay in git history), then add this lean set.
+- [2] Create repos `postflowx-server` (watchdog, gateway, executioner, **sdk/**, **plugins/demo/**) and `postflowx-web`. README + `.gitignore` each.
 - [ ] Pick a license (MIT, or AGPL-3.0 if you don't want closed hosted forks) → `LICENSE` in every repo.
 - [ ] In server and web repos: `PROTO_REF` (deploy tag/commit) + `scripts/sync-proto.sh` (sparse-clone only `proto/`, generated code is gitignored).
 - [ ] `bash scripts/init-secrets.sh && cp .env.example .env`
