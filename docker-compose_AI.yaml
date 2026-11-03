@@ -1,0 +1,208 @@
+# PostFlowX — Compose skeleton (verified step by step in ROADMAP Step 1)
+#
+# This file describes the target topology from docs/ARCHITECTURE.md.
+# It is a SKELETON: the server/web images do not exist yet (see docs/ROADMAP.md, Step 1).
+# Items marked "CHECK Cn" are verified in Step 1/2 (checkpoints in docs/ROADMAP.md); pin versions there.
+#
+# Layout assumption (sibling checkouts):
+#   ../postflowx-server   C++ server (watchdog, gateway, core, plugin host)
+#   ../postflowx-web      React frontend + Fastify BFF
+#   ./                    this deploy repo
+#
+# First start:   ./scripts/init-secrets.sh && cp .env.example .env && docker compose up --build
+
+name: postflowx
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — reachable ONLY from the server container (backend network).
+  # ---------------------------------------------------------------------------
+  db:
+    <<: *common
+    image: postgres:18-alpine # CHECK C4: pin exact version + digest before any release
+    environment:
+      POSTGRES_DB: ${POSTFLOWX_DB_NAME:-postflowx}
+      POSTGRES_USER: ${POSTFLOWX_DB_USER:-postflowx}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      # PostgreSQL 18+ images expect the volume at /var/lib/postgresql (CHECK C4: verify).
+      - pgdata:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Server container — ONE container, several OS processes (see docs/DECISIONS.md D-02):
+  #   watchdog (PID 1, root, minimal caps) -> gateway, core, plugin processes
+  # Only the watchdog starts as root; it drops privileges per child process.
+  # ---------------------------------------------------------------------------
+  server:
+    <<: *common
+    build:
+      context: ../postflowx-server
+    image: postflowx-server:${POSTFLOWX_VERSION:-dev}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PFX_MODE: ${POSTFLOWX_MODE:-production} # production | development
+      PFX_LOG_LEVEL: ${POSTFLOWX_LOG_LEVEL:-info}
+      PFX_PUBLIC_BASE_URL: ${POSTFLOWX_PUBLIC_BASE_URL:-http://localhost:8080}
+      PFX_DB_HOST: db
+      PFX_DB_NAME: ${POSTFLOWX_DB_NAME:-postflowx}
+      PFX_DB_USER: ${POSTFLOWX_DB_USER:-postflowx}
+      # Secrets are delivered as files (/run/secrets/*); never as plain env values.
+    secrets:
+      - db_password
+      - core_master_key
+      - internal_ca_cert
+      - internal_server_cert
+      - internal_server_key
+    volumes:
+      - media:/var/lib/postflowx/media
+      - plugins:/var/lib/postflowx/plugins:ro # plugin packages are installed by the operator CLI, not at runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/postflowx:size=8m,mode=0755 # unix sockets + re-homed secrets (created by the watchdog)
+    # Minimal capabilities for the watchdog (see docs/DECISIONS.md D-07). Children drop everything.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - KILL
+      - DAC_READ_SEARCH # read 0400 secret files owned by the host user (CHECK C3: verify)
+      # CHECK C5: dropping the bounding set for children may additionally need SETPCAP (docs/DECISIONS.md D-07)
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: ${POSTFLOWX_SERVER_MEM:-1g}
+    stop_grace_period: 45s # drain jobs -> stop plugins -> stop gateway -> stop core
+    healthcheck:
+      # The watchdog reports aggregate health (core + gateway ready). Plugin failures = degraded, not unhealthy.
+      test: ["CMD", "/usr/local/bin/postflowx-watchdog", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - backend # web <-> server (mTLS gRPC) and server <-> db
+      - egress # outbound internet for plugins calling provider APIs
+
+  # ---------------------------------------------------------------------------
+  # Web container — React SPA + thin Fastify BFF (docs/ARCHITECTURE.md §4).
+  # The ONLY service that is published to the host.
+  # ---------------------------------------------------------------------------
+  web:
+    <<: *common
+    build:
+      context: ../postflowx-web
+    image: postflowx-web:${POSTFLOWX_VERSION:-dev}
+    depends_on:
+      server:
+        condition: service_started # web renders a degraded screen if the server is down
+    environment:
+      PFX_MODE: ${POSTFLOWX_MODE:-production}
+      PFX_LOG_LEVEL: ${POSTFLOWX_LOG_LEVEL:-info}
+      PFX_PUBLIC_BASE_URL: ${POSTFLOWX_PUBLIC_BASE_URL:-http://localhost:8080}
+      PFX_SERVER_ADDR: server:50051
+    secrets:
+      - internal_ca_cert
+      - internal_web_cert
+      - internal_web_key
+    # Secure default: bind to localhost only. Use the "tls" profile (reverse proxy)
+    # or set POSTFLOWX_HTTP_BIND=0.0.0.0 deliberately for LAN/public access.
+    ports:
+      - "${POSTFLOWX_HTTP_BIND:-127.0.0.1}:${POSTFLOWX_HTTP_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    user: "10030:10030"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: ${POSTFLOWX_WEB_MEM:-512m}
+    healthcheck:
+      test: ["CMD", "node", "dist/healthcheck.js"] # Step 1: placeholder; must distinguish "can serve UI" from "operations available"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - public
+      - backend
+
+  # ---------------------------------------------------------------------------
+  # Optional TLS reverse proxy (profile "tls"). Required for Instagram in production:
+  # Meta needs HTTPS for the OAuth redirect URI and public media URLs. (Step 11)
+  # Usage: docker compose --profile tls up -d   (see Caddyfile.example)
+  # ---------------------------------------------------------------------------
+  proxy:
+    <<: *common
+    profiles: ["tls"]
+    image: caddy:2-alpine # Step 11: pin exact version + digest
+    environment:
+      POSTFLOWX_DOMAIN: ${POSTFLOWX_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - public
+
+networks:
+  public: {} # web (+ optional proxy); the only network with published ports
+  backend:
+    internal: true # no outbound internet; web <-> server <-> db
+  egress: {} # server only: outbound calls from plugins to provider APIs
+
+volumes:
+  pgdata: {}
+  media: {}
+  plugins: {}
+  caddy_data: {}
+  caddy_config: {}
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  core_master_key:
+    file: ./secrets/core_master_key
+  internal_ca_cert:
+    file: ./secrets/internal_ca.crt
+  internal_server_cert:
+    file: ./secrets/internal_server.crt
+  internal_server_key:
+    file: ./secrets/internal_server.key
+  internal_web_cert:
+    file: ./secrets/internal_web.crt
+  internal_web_key:
+    file: ./secrets/internal_web.key

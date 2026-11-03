@@ -8,13 +8,13 @@ Why things are like this: [`DECISIONS.md`](DECISIONS.md) (D-xx). Message definit
 Browser ──HTTPS (proxy) / HTTP localhost──► web container (React SPA + Fastify BFF)      nets: public, backend
                                               │ gRPC / TCP / mTLS
  ┌────────────────────────────────── server container ──────────────────────────────┐  nets: backend, egress
- │ Watchdog (PID 1) ──spawns/supervises──┐                                           │
- │                                       ▼                                           │
+ │ Controller (PID 1) ──spawns/supervises──┐                                        │
+ │                                       ▼                                          │
  │   Gateway ◄──UDS──► Core ───── TCP, SCRAM ──────────────────────────► db (PostgreSQL)   net: backend
- │     ▲  ▲                                                                          │
- │     │  └─ per-plugin UDS pair ─► Plugin A / Plugin B  (own UID each)               │
- │     └──────────────────────────────┘                  │ outbound only (egress)    │
- └───────────────────────────────────────────────────────┼───────────────────────────┘
+ │     ▲  ▲                                                                         │
+ │     │  └─ per-plugin UDS pair ─► Plugin A / Plugin B  (own UID each)             │
+ │     └──────────────────────────────┘                  │ outbound only (egress)   │
+ └───────────────────────────────────────────────────────┼──────────────────────────┘
                                                          ▼  Provider APIs (e.g. Meta)
 ```
 

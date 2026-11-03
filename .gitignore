@@ -3,5 +3,3 @@
 secrets/*
 !secrets/.gitkeep
 
-# Local, superseded planning documents
-docs_old/

@@ -38,7 +38,7 @@ Docker stack
 **Defaults I assumed — confirm or change before Steps 3–12 (they affect the contracts):**
 
 | # | Assumption | Alternative |
-|---|---|---|
+| --- | --- | --- |
 | N-1 | **Auth, ownership checks, audit and the master key live in the Gateway** (single door + only DB client). No separate Core. | split a "Core" out later if the Gateway grows too big |
 | N-2 | **Controller = parent of all five platform processes.** Start, rights, crash detection (`waitpid`) and restart are kernel-level parent/child actions, not IPC. **Watchdog** asks every process "are you healthy?" **through the Gateway**; the Gateway itself is probed on its status-only health socket (it cannot be asked through itself). Watchdog ↔ Controller use **one private parent/child channel** with only `restart(name)`, `stop(name)`, `status()` — a deliberate exception to "everything through the Gateway", because otherwise a hung Gateway could never be restarted. | Watchdog restarts via the Gateway (a hung Gateway = deadlock) |
 | N-3 | Plugin ↔ Executioner = **private inherited channel** (socketpair/UDS). Plugins have no socket to the Gateway. | per-plugin Gateway sockets |
@@ -69,10 +69,10 @@ Phase B: P0 Instagram research+repo → P1 connect → P2 publish → P3 schedul
 
 - [2] Commit your current repo state (the long docs stay in git history), then add this lean set.
 - [2] Create repos `postflowx-server` (controller, watchdog, gateway, executioner, plugin-manager, filesystem, **sdk/**, **plugins/demo/**) and `postflowx-web`. README + `.gitignore` each.
-- [ ] Pick a license (MIT, or AGPL-3.0 if you don't want closed hosted forks) → `LICENSE` in every repo.
-- [ ] In server and web repos: `PROTO_REF` (deploy tag/commit) + `scripts/sync-proto.sh` (sparse-clone only `proto/`, generated code is gitignored).
-- [ ] `bash scripts/init-secrets.sh && cp .env.example .env`
-- **Done when:** repos exist, `docker compose config -q` passes.
+- [1] Pick a license (MIT, or AGPL-3.0 if you don't want closed hosted forks) → `LICENSE` in every repo.
+- [1] In server and web repos: `PROTO_REF` (deploy tag/commit) + `scripts/sync-proto.sh` (sparse-clone only `proto/`, generated code is gitignored).
+- [2] `bash scripts/init-secrets.sh && cp .env.example .env`
+- **Done when:** repos exist and skeleton has some kind of form (Comment: not using the ai docker-compose since i wanna write that myself my still keeping it inside this repo)
 
 ### Step 1 — Walking skeleton + checkpoints C1–C4 · L
 
